@@ -29,7 +29,9 @@ Phone subscriptions can only be registered or tested for the signed-in person. S
 
 ## Source and verification
 
-Version 1.3 follows the supplied visual reference with a light canvas, a charcoal navigation rail, sage and lime cards, oversized headings, and both company logos. The task board stays central, with company shortcuts and phone reminders alongside it. Completion progress and a seven-day due-date chart use only the tasks authorized for the signed-in account and the selected company. Frosted sign-in and dialog surfaces fall back to opaque backgrounds when blur is unavailable. Motion respects the device’s reduced-motion preference.
+Version 1.4 removes decorative arrows and stars, uses a checklist identity, and adds a brief colorful completion burst after a successful save. The animation is non-blocking, clears automatically, and is replaced by a static success message for reduced-motion users. Reopening a task or a failed save never triggers a celebration.
+
+The visual layout follows the supplied visual reference with a light canvas, a charcoal navigation rail, sage and lime cards, oversized headings, and both company logos. The task board stays central, with company shortcuts and phone reminders alongside it. Completion progress and a seven-day due-date chart use only the tasks authorized for the signed-in account and the selected company. Frosted sign-in and dialog surfaces fall back to opaque backgrounds when blur is unavailable. Motion respects the device’s reduced-motion preference.
 
 Headings, controls, and task text use [Manrope](https://fonts.google.com/specimen/Manrope); compact navigation initials use [Sora](https://fonts.google.com/specimen/Sora). Both fonts are self-hosted as Latin WOFF2 files under the SIL Open Font License. Their licenses are included in `public/sora-license.txt` and `public/manrope-license.txt`. Company logo images are optimized web copies of the supplied artwork.
 
