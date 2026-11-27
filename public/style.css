@@ -26,6 +26,14 @@ label{display:block;font-size:12px;font-weight:600;margin-bottom:9px}input,selec
 @media(prefers-reduced-motion:reduce){.completion-celebration{display:none!important}}
 
 /* A personal greeting and a verse for the day. */
-+.personal-welcome{min-width:0;max-width:920px}.page-heading{align-items:center;margin-top:8px;margin-bottom:30px}.page-heading h1{font-size:clamp(34px,4.1vw,60px);letter-spacing:-2.6px;line-height:1.15;margin:0 0 20px}.page-heading>.primary{margin-top:0}.daily-verse{margin:0;padding:0 0 0 18px;border-left:3px solid #bed785;max-width:800px}.page-heading .daily-verse p{font-size:15px;line-height:1.8;color:#536249;max-width:none;margin:0 0 9px}.daily-verse cite{display:block;font-size:11px;font-style:normal;font-weight:700;color:#738260;letter-spacing:.3px}
-+@media(max-width:700px){.page-heading{margin-top:0;margin-bottom:22px}.page-heading h1{font-size:36px;letter-spacing:-1.7px;margin-bottom:19px}.page-heading>.primary{margin-top:20px}.daily-verse{padding-left:13px}.page-heading .daily-verse p{font-size:13px;line-height:1.75}.daily-verse cite{font-size:10px}}
-+
+.personal-welcome{min-width:0;max-width:920px}.page-heading{align-items:center;margin-top:8px;margin-bottom:30px}.page-heading h1{font-size:clamp(34px,4.1vw,60px);letter-spacing:-2.6px;line-height:1.15;margin:0 0 20px}.page-heading>.primary{margin-top:0}.daily-verse{margin:0;padding:0 0 0 18px;border-left:3px solid #bed785;max-width:800px}.page-heading .daily-verse p{font-size:15px;line-height:1.8;color:#536249;max-width:none;margin:0 0 9px}.daily-verse cite{display:block;font-size:11px;font-style:normal;font-weight:700;color:#738260;letter-spacing:.3px}
+@media(max-width:700px){.page-heading{margin-top:0;margin-bottom:22px}.page-heading h1{font-size:36px;letter-spacing:-1.7px;margin-bottom:19px}.page-heading>.primary{margin-top:20px}.daily-verse{padding-left:13px}.page-heading .daily-verse p{font-size:13px;line-height:1.75}.daily-verse cite{font-size:10px}}
+
+/* Overdue open tasks: color plus a readable label, cleared on completion. */
+.task-row.overdue-row{background:#fff0ef;box-shadow:inset 3px 0 0 #c73c39;border-top-color:#edcdca;transition:background-color .18s ease}
+.task-row.overdue-row:hover{background:#ffe5e3}
+.overdue-row .task-title,.overdue-row .due{color:#9c2926}
+.overdue-row .task-check{border-color:#bd5751;background:#fff8f7}
+.overdue-row .task-check:hover{background:#fbd4d0;border-color:#9c2926}
+.overdue-label{display:block;font-size:9px;font-weight:800;line-height:1.4;margin-bottom:3px}
+@media(prefers-reduced-motion:reduce){.task-row.overdue-row{transition:none}}
