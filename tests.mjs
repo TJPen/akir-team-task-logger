@@ -3,20 +3,23 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {generateKeyPairSync,createPublicKey,diffieHellman,hkdfSync,createDecipheriv,verify} from 'node:crypto';
-import worker,{morning,centralDate,validateTask,processJobs} from './worker.mjs';
+import worker,{morning,centralDate,validateTask,processJobs,jobStatements} from './worker.mjs';
 import {encryptPayload,pushRequest,validEndpoint,b64,unb64} from './push.mjs';
+import {processRecurrences,processDigests,summaryFor} from './workflows.mjs';
+import {nextDate} from './domain.mjs';
 const origin='https://example.test';
 async function fixture(){
  const db=new DatabaseSync(':memory:');db.exec(await readFile(new URL('./schema.sql',import.meta.url),'utf8'));
- function prepare(sql){let args=[];const result={bind(...a){args=a;return result;},async first(){return db.prepare(sql).get(...args)||null;},async all(){return {results:db.prepare(sql).all(...args)};},async run(){const r=db.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}};},sql,args:()=>args};return result;}
+ let queryCount=0;
+ function prepare(sql){let args=[];const result={bind(...a){args=a.map(v=>v instanceof ArrayBuffer?new Uint8Array(v):v);return result;},async first(){queryCount++;return db.prepare(sql).get(...args)||null;},async all(){queryCount++;return {results:db.prepare(sql).all(...args)};},async run(){queryCount++;const r=db.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}};},sql,args:()=>args};return result;}
  const DB={prepare,async batch(stmts){db.exec('BEGIN');try{const out=[];for(const s of stmts){if(/^\s*SELECT/i.test(s.sql))out.push(await s.all());else out.push(await s.run());}db.exec('COMMIT');return out;}catch(e){db.exec('ROLLBACK');throw e;}}};
  const vapid=generateKeyPairSync('ec',{namedCurve:'prime256v1'}),jwk=vapid.privateKey.export({format:'jwk'}),pub=Buffer.concat([Buffer.from([4]),Buffer.from(jwk.x,'base64url'),Buffer.from(jwk.y,'base64url')]);
  const env={DB,TJ_PASSWORD:'test-admin-password',MSTAY_PASSWORD:'test-tay-password',FELICIA_PASSWORD:'test-felicia-password',LOGIN_PEPPER:'test-pepper',APP_ORIGIN:origin,VAPID_PRIVATE:JSON.stringify(jwk),VAPID_PUBLIC:pub.toString('base64url')};let cookie='',pending=[];
  const ctx={waitUntil(p){pending.push(p);}};
- async function request(path,method='GET',data,options={}){const headers={...(!options.noOrigin?{origin}:{}),...(cookie?{cookie}:{}),...(data?{'Content-Type':'application/json'}:{}),...(options.headers||{})};return worker.fetch(new Request(origin+path,{method,headers,body:data?JSON.stringify(data):undefined}),env,ctx);}
+ async function request(path,method='GET',data,options={}){const headers={...(!options.noOrigin?{origin}:{}),...(cookie?{cookie}:{}),...(data?{'Content-Type':'application/json'}:{}),...(options.headers||{})};return worker.fetch(new Request(origin+path,{method,headers,body:options.raw??(data?JSON.stringify(data):undefined)}),env,ctx);}
  async function login(person='TJ'){const key={'TJ':'TJ_PASSWORD','Ms. Tay':'MSTAY_PASSWORD','Felicia':'FELICIA_PASSWORD'}[person];const r=await request('/api/login','POST',{password:env[key]});cookie=r.headers.get('set-cookie').split(';')[0];return r;}
  async function drain(){await Promise.all(pending);pending=[];}
- return {db,env,request,login,drain};
+ return {db,env,request,login,drain,queryCount:()=>queryCount,resetCount:()=>queryCount=0};
 }
 const sample=()=>({company:'akir',assignee:'TJ',due_date:centralDate(Date.now()+3*86400000),description:'Confirm next week’s supply order'});
 test('Central reminders use 9 AM in winter, summer, and DST transition days',()=>{
@@ -95,14 +98,14 @@ test('personal accounts isolate both companies and prevent direct access to othe
  }
  await f.login();const state=await (await f.request('/api/state')).json();assert.equal(state.user.role,'admin');assert.equal(state.tasks.length,3);assert.equal(state.tasks.filter(t=>t.status==='done').length,2);f.db.close();
 });
-test('both members can assign tasks to everyone, but only see their own assignments',async()=>{
+test('members see their assignments by default and retain creator access after reassignment',async()=>{
  const f=await fixture();
  for(const person of ['Ms. Tay','Felicia']){
   await f.login(person);for(const assignee of ['TJ','Ms. Tay','Felicia']){const r=await f.request('/api/tasks','POST',{...sample(),assignee});assert.equal(r.status,201);await f.drain();}
   const state=await (await f.request('/api/state')).json();assert(state.tasks.every(t=>t.assignee===person));
   const own=state.tasks[0];assert.equal((await f.request('/api/tasks/'+own.id,'PATCH',{version:own.version,assignee:'TJ'})).status,200);await f.drain();
   assert(!(await (await f.request('/api/state')).json()).tasks.some(t=>t.id===own.id));
-  assert.equal((await f.request('/api/tasks/'+own.id,'PATCH',{version:own.version+1,description:'Attempted edit'})).status,404);
+  assert.equal((await f.request('/api/tasks/'+own.id,'PATCH',{version:own.version+1,description:'Creator follow-up'})).status,200);
  }
  await f.login();assert.equal((await (await f.request('/api/state')).json()).tasks.length,6);f.db.close();
 });
@@ -131,4 +134,82 @@ test('upgrade preserves tasks, revokes shared sessions, and requires phone owner
  db.exec("INSERT INTO tasks(id,company,assignee,due_date,description,created_at,updated_at) VALUES('existing','akir','Ms. Tay','2027-01-01','Keep this task',1,1); INSERT INTO sessions VALUES('legacy',9999999999999); INSERT INTO subscriptions VALUES('legacy-phone','TJ','https://fcm.googleapis.com/fcm/send/legacy','key','auth',1);");
  db.exec(await readFile(new URL('./migrations/002_personal_accounts.sql',import.meta.url),'utf8'));
  assert.equal(db.prepare('SELECT description FROM tasks').get().description,'Keep this task');assert.equal(db.prepare('SELECT COUNT(*) n FROM sessions').get().n,0);assert.equal(db.prepare('SELECT verified FROM subscriptions').get().verified,0);db.close();
+});
+
+test('creator view, task collaboration and files stay private from unrelated members',async()=>{
+ const f=await fixture();await f.login('Ms. Tay');
+ const {id}=await (await f.request('/api/tasks','POST',{...sample(),assignee:'TJ',priority:'urgent',checklist:['Review invoice']})).json();await f.drain();
+ assert.equal((await (await f.request('/api/state')).json()).tasks.length,0);
+ let created=await (await f.request('/api/state?view=created')).json();assert.equal(created.tasks.length,1);assert.equal(created.tasks[0].created_by,'Ms. Tay');
+ assert.equal((await f.request('/api/tasks/'+id+'/comments','POST',{body:'Please check <script>this</script>.'})).status,201);
+ const bytes=new Uint8Array(600000);for(let i=0;i<bytes.length;i++)bytes[i]=i%251;
+ const uploaded=await f.request('/api/tasks/'+id+'/attachments','POST',null,{raw:bytes,headers:{'content-type':'application/octet-stream','x-file-name':encodeURIComponent('invoice & notes.pdf')}});assert.equal(uploaded.status,201);const aid=(await uploaded.json()).id;
+ const download=await f.request('/api/tasks/'+id+'/attachments/'+aid);assert.equal(download.status,200);assert.deepEqual(new Uint8Array(await download.arrayBuffer()),bytes);assert.match(download.headers.get('content-disposition'),/attachment/);assert.match(download.headers.get('content-security-policy'),/sandbox/);
+ await f.login('Felicia');for(const path of ['/api/tasks/'+id,'/api/tasks/'+id+'/attachments/'+aid])assert.equal((await f.request(path)).status,404);
+ assert.equal((await f.request('/api/tasks/'+id+'/comments','POST',{body:'Forbidden'})).status,404);
+ assert.equal((await f.request('/api/tasks/'+id+'/checklist','POST',{title:'Forbidden'})).status,404);
+ await f.login();const detail=await (await f.request('/api/tasks/'+id)).json();assert.equal(detail.comments.length,1);assert.equal(detail.attachments.length,1);assert.equal(detail.task.priority,'urgent');assert(detail.history.some(e=>e.actor==='Ms. Tay'&&e.event==='attachment'));
+ await f.login('Ms. Tay');assert.equal((await f.request('/api/tasks/'+id+'/attachments/'+aid,'DELETE',{})).status,200);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM attachment_chunks').get().n,0);f.db.close();
+});
+test('progress requires a blocked reason; completion, reopening, checklist and history work',async()=>{
+ const f=await fixture();await f.login();const {id}=await (await f.request('/api/tasks','POST',{...sample(),priority:'high',checklist:['Inspect supplies','Send report']})).json();await f.drain();
+ assert.equal((await f.request('/api/tasks/'+id,'PATCH',{version:1,progress:'blocked'})).status,400);
+ assert.equal((await f.request('/api/tasks/'+id,'PATCH',{version:1,progress:'blocked',blocked_reason:'Waiting for delivery'})).status,200);await f.drain();
+ let detail=await (await f.request('/api/tasks/'+id)).json();assert.equal(detail.task.status,'open');assert.equal(detail.task.progress,'blocked');assert.equal(detail.task.blocked_reason,'Waiting for delivery');
+ const item=detail.checklist[0];assert.equal((await f.request('/api/tasks/'+id+'/checklist/'+item.id,'PATCH',{version:1,done:true})).status,200);
+ assert.equal((await f.request('/api/tasks/'+id+'/checklist/'+item.id,'PATCH',{version:1,done:false})).status,409);
+ const state=await (await f.request('/api/state')).json();assert.equal(state.tasks[0].checklist_total,2);assert.equal(state.tasks[0].checklist_done,1);
+ assert.equal((await f.request('/api/tasks/'+id,'PATCH',{version:2,progress:'completed'})).status,200);await f.drain();
+ detail=await (await f.request('/api/tasks/'+id)).json();assert.equal(detail.task.status,'done');assert.equal(detail.task.blocked_reason,'');assert(detail.history.some(a=>a.detail.includes('Checked checklist item')));
+ assert.equal((await f.request('/api/tasks/'+id,'PATCH',{version:3,status:'open'})).status,200);await f.drain();assert.equal((await (await f.request('/api/tasks/'+id)).json()).task.progress,'not_started');f.db.close();
+});
+test('recurrence preserves monthly anchor, checklist, ownership and deduplicates generation',async()=>{
+ assert.equal(nextDate('2027-01-31','monthly',31),'2027-02-28');assert.equal(nextDate('2027-02-28','monthly',31),'2027-03-31');assert.equal(nextDate('2028-01-31','monthly',31),'2028-02-29');assert.equal(nextDate('2027-12-31','daily'),'2028-01-01');
+ const f=await fixture();await f.login('Ms. Tay');const {id}=await (await f.request('/api/tasks','POST',{...sample(),due_date:'2027-01-31',assignee:'Felicia',recurrence:'monthly',checklist:['Count stock']})).json();await f.drain();
+ const s=f.db.prepare('SELECT * FROM recurring_series').get();assert.equal(s.next_due_date,'2027-02-28');
+ await f.request('/api/tasks/'+id+'/checklist','POST',{title:'Send totals'});
+ await f.request('/api/tasks/'+id,'PATCH',{version:1,status:'done'});await f.drain();
+ let tasks=f.db.prepare('SELECT * FROM tasks ORDER BY due_date').all();assert.equal(tasks.length,2);assert.equal(tasks[1].due_date,'2027-02-28');assert.equal(tasks[1].created_by,'Ms. Tay');assert.equal(tasks[1].assignee,'Felicia');
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM checklist_items WHERE task_id=? AND done=0').get(tasks[1].id).n,2);
+ await processRecurrences(f.env,jobStatements,Date.parse('2027-02-01T18:00:00Z'));assert.equal(f.db.prepare('SELECT COUNT(*) n FROM tasks').get().n,2);
+ // The next occurrence is created after a missed due date, while the missed task stays open.
+ await processRecurrences(f.env,jobStatements,Date.parse('2027-03-01T18:00:00Z'));tasks=f.db.prepare('SELECT * FROM tasks ORDER BY due_date').all();assert.equal(tasks.length,3);assert.equal(tasks[1].status,'open');assert.equal(tasks[2].due_date,'2027-03-31');
+ await processRecurrences(f.env,jobStatements,Date.parse('2027-03-01T18:00:00Z'));assert.equal(f.db.prepare('SELECT COUNT(*) n FROM tasks').get().n,3);
+ await f.request('/api/tasks/'+tasks[2].id,'PATCH',{version:1,recurrence:'none'});await f.drain();await processRecurrences(f.env,jobStatements,Date.parse('2027-04-01T18:00:00Z'));assert.equal(f.db.prepare('SELECT COUNT(*) n FROM tasks').get().n,3);f.db.close();
+});
+test('daily summaries use recipient scope, Central 9 AM, retry and per-device deduplication',async()=>{
+ const f=await fixture();await f.login();const date='2027-02-12',now=morning(date);
+ for(const assignee of ['TJ','Ms. Tay','Felicia']){await f.request('/api/tasks','POST',{...sample(),assignee,due_date:date});await f.drain();}
+ const pair=generateKeyPairSync('ec',{namedCurve:'prime256v1'}),jwk=pair.publicKey.export({format:'jwk'}),pub=Buffer.concat([Buffer.from([4]),Buffer.from(jwk.x,'base64url'),Buffer.from(jwk.y,'base64url')]);
+ for(const person of ['TJ','Ms. Tay'])f.db.prepare('INSERT INTO subscriptions(id,person,endpoint,p256dh,auth,created_at,verified) VALUES(?,?,?,?,?,?,1)').run(person,person,'https://web.push.apple.com/'+person,pub.toString('base64url'),Buffer.alloc(16,4).toString('base64url'),now);
+ assert.equal((await summaryFor(f.env,{name:'TJ'},now)).due_today.length,3);assert.equal((await summaryFor(f.env,{name:'Ms. Tay'},now)).due_today.length,1);
+ const original=globalThis.fetch;let calls=0,failOnce=true;globalThis.fetch=async(url)=>{calls++;if(url.endsWith('TJ')&&failOnce){failOnce=false;return new Response(null,{status:503});}return new Response(null,{status:201});};
+ try{await processDigests(f.env,now-1);assert.equal(calls,0);await processDigests(f.env,now);assert.equal(calls,2);await processDigests(f.env,now+1000);assert.equal(calls,2);await processDigests(f.env,now+301000);assert.equal(calls,3);await processDigests(f.env,now+601000);assert.equal(calls,3);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM digest_deliveries').get().n,2);
+ await f.login('Ms. Tay');await f.request('/api/preferences','PATCH',{digest_enabled:false});await processDigests(f.env,morning('2027-02-13'));assert.equal(calls,4);assert.equal((await (await f.request('/api/state')).json()).preferences.digest_enabled,false);
+ }finally{globalThis.fetch=original;f.db.close();}
+});
+test('validation rejects hostile uploads, invalid recurrence, oversized checklist and forged creator',async()=>{
+ const f=await fixture();await f.login('Felicia');
+ for(const patch of [{priority:'critical'},{recurrence:'yearly'},{checklist:Array(31).fill('Step')},{progress:'blocked'},{checklist:[' '] }])assert.equal((await f.request('/api/tasks','POST',{...sample(),...patch})).status,400);
+ const {id}=await (await f.request('/api/tasks','POST',{...sample(),created_by:'TJ'})).json();await f.drain();assert.equal(f.db.prepare('SELECT created_by FROM tasks WHERE id=?').get(id).created_by,'Felicia');
+ assert.equal((await f.request('/api/tasks/'+id+'/attachments','POST',null,{raw:new Uint8Array([1]),headers:{'x-file-name':'attack.html'}})).status,400);
+ assert.equal((await f.request('/api/tasks/'+id+'/attachments','POST',null,{raw:new Uint8Array([1]),headers:{'x-file-name':'big.pdf','content-length':String(6*1024*1024)}})).status,413);
+ assert.equal((await f.request('/api/tasks/'+id+'/comments','POST',{body:'x'.repeat(2001)})).status,400);f.db.close();
+});
+test('workflow migration preserves live tasks, sessions and phone subscriptions',async()=>{
+ const db=new DatabaseSync(':memory:');const schema=await readFile(new URL('./schema.sql',import.meta.url),'utf8');db.exec(schema.split('-- Additive upgrade:')[0]);
+ db.exec("INSERT INTO tasks(id,company,assignee,due_date,description,status,created_at,updated_at) VALUES('old','akir','TJ','2026-12-01','Keep original','done',1,1);INSERT INTO sessions VALUES('session',9999999999999,'TJ');INSERT INTO subscriptions VALUES('phone','TJ','https://web.push.apple.com/example','key','auth',1,1);");
+ db.exec(await readFile(new URL('./migrations/003_team_workflows.sql',import.meta.url),'utf8'));
+ const t=db.prepare('SELECT * FROM tasks').get();assert.equal(t.description,'Keep original');assert.equal(t.progress,'completed');assert.equal(t.created_by,null);assert.equal(db.prepare('SELECT COUNT(*) n FROM sessions').get().n,1);assert.equal(db.prepare('SELECT verified FROM subscriptions').get().verified,1);db.close();
+});
+test('scheduled recurrence, reminders and three summaries fit the free-plan query budget',async()=>{
+ const f=await fixture();await f.login();const date='2027-02-13',now=morning(date);
+ await f.request('/api/tasks','POST',{...sample(),due_date:'2027-02-12',recurrence:'daily',checklist:Array.from({length:30},(_,i)=>'Step '+i)});await f.drain();
+ for(const assignee of ['TJ','Ms. Tay','Felicia']){await f.request('/api/tasks','POST',{...sample(),assignee,due_date:date});await f.drain();}
+ const pair=generateKeyPairSync('ec',{namedCurve:'prime256v1'}),jwk=pair.publicKey.export({format:'jwk'}),pub=Buffer.concat([Buffer.from([4]),Buffer.from(jwk.x,'base64url'),Buffer.from(jwk.y,'base64url')]);
+ for(const person of ['TJ','Ms. Tay','Felicia'])for(let i=0;i<3;i++)f.db.prepare('INSERT INTO subscriptions(id,person,endpoint,p256dh,auth,created_at,verified) VALUES(?,?,?,?,?,?,1)').run(person+i,person,'https://web.push.apple.com/'+person+i,pub.toString('base64url'),Buffer.alloc(16,4).toString('base64url'),now);
+ const original=globalThis.fetch;globalThis.fetch=async()=>new Response(null,{status:201});
+ try{f.resetCount();await worker.scheduled({scheduledTime:now},f.env);assert(f.queryCount()<=50,'Scheduled queries: '+f.queryCount());assert.equal(f.db.prepare('SELECT COUNT(*) n FROM digest_deliveries').get().n,3);}
+ finally{globalThis.fetch=original;f.db.close();}
 });

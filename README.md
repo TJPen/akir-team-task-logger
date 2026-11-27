@@ -4,7 +4,7 @@ A shared task board for **Akir Enterprises** and **Xpress One Labs – Alabama**
 
 Live app: https://akir-team-task-logger.designs-dd9.workers.dev
 
-## First build
+## Task management
 
 - Company → assignee (Ms. Tay, TJ, Felicia) → due date → task description.
 - Edit, complete, reopen, search, and filter tasks. Saved in Cloudflare D1 and shared across devices.
@@ -23,9 +23,19 @@ Live app: https://akir-team-task-logger.designs-dd9.workers.dev
 
 Repeat for each person/device. Browser permission, network connection, device notification settings, and the push service affect delivery. “Push service accepted” is not proof that the person saw the notification. A phone delivery test is required after setup.
 
-TJ is the administrator and can see/edit all tasks in both companies. Ms. Tay and Felicia can see/edit only tasks currently assigned to themselves. Every person can create tasks assigned to anyone, including themselves. A task assigned to someone else appears in that recipient’s list and TJ’s admin view; its creator receives a confirmation but cannot read or edit it afterward unless it is assigned back to them. These rules are enforced in the API, including direct requests and searches.
+TJ is the administrator and can manage all tasks in both companies. Ms. Tay and Felicia can access tasks assigned to them **or created by them**. Their default view shows assignments to them; **Assigned by me** shows tasks they created, including tasks assigned to someone else. Creator identity is immutable and is determined from the authenticated session. Older tasks have an unknown creator rather than an invented attribution. Task details, comments, checklists, activity and file downloads enforce the same access rules server-side. After reassignment, a former assignee loses access unless they are the creator or TJ.
 
 Phone subscriptions can only be registered or tested for the signed-in person. Sign-out ends the session and disconnects that browser’s phone notifications. Sign in and enable notifications again to reconnect.
+
+## Version 2 workflows
+
+- Priorities: Normal, High, Urgent; higher priorities sort first, with filters for priority and progress.
+- Progress: Not started, In progress, Blocked (a reason is required), Completed. The existing checkbox completes or reopens a task, and overdue open tasks stay red.
+- Click a task title to open its comments, checklist, private files and activity. Activity starts with this upgrade; it does not fabricate past changes. Up to 200 comments and 30 checklist items per task; the latest 201 history entries are returned.
+- Daily, weekly and monthly recurrence creates a fresh task on completion or after the previous due date. Missed tasks remain open; checklists reset unchecked. Monthly dates preserve the original day (January 31 → February 28 → March 31). Only the latest occurrence changes the repeat template. Choose **Does not repeat** there to stop the series. Comments and files stay with their original occurrence.
+- **Morning summary** opens due-today and overdue tasks. The push summary is queued at 9 AM America/Chicago, with DST support; TJ sees counts for both companies, others see only their assignments. Phone setup includes an individual opt-out. Retries stop after the three-hour morning window and accepted devices are deduplicated. There is no exact-once guarantee across an acceptance/database-write failure.
+- Files are stored privately in D1 (R2 is not enabled on this account), in 256 KB chunks. Limits: 5 MB per file, 20 files per task, 250 MB total. Downloads require an authenticated authorized account and are served as attachments with a sandbox policy. Allowed extensions: PDF, PNG/JPEG/WebP/HEIC, TXT, CSV, DOCX, XLSX. This build does not scan files for malware. The uploader, task creator or TJ may remove a file.
+- The five-minute cron processes one recurring series, one reminder job (up to two pending devices), and one pending device per recipient’s daily summary per run to keep work bounded. Interactive changes process up to two reminder jobs. Large backlogs or multiple devices can delay delivery; accepted devices are skipped on subsequent retries.
 
 ## Source and verification
 
@@ -44,7 +54,7 @@ npm run build
 npm test
 ```
 
-`public/` contains the responsive UI, web app manifest, icons, and service worker. `build.mjs` produces `assets.mjs` for upload. `worker.mjs` implements authentication, task APIs, D1 jobs, and the scheduled handler. `push.mjs` uses Web Crypto for RFC 8291 encryption and RFC 8292 VAPID.
+`public/` contains the responsive UI, web app manifest, icons, and service worker. `build.mjs` produces `assets.mjs` for upload. `worker.mjs` implements authentication, task listing, push jobs and the scheduled handler. `domain.mjs` holds date and validation rules; `workflows.mjs` implements collaboration, recurrence, private files and daily summaries. `push.mjs` uses Web Crypto for RFC 8291 encryption and RFC 8292 VAPID.
 
 Tests cover dates and daylight saving transitions, validation, authentication, CSRF protection, persisted task changes, optimistic edit conflicts, completion/reopening, retry and duplicate suppression, push URL restrictions, payload decryption with independent Node crypto, and VAPID signature verification. Live browser QA checks the deployed UI separately.
 
@@ -52,7 +62,7 @@ Tests cover dates and daylight saving transitions, validation, authentication, C
 
 Worker name: `akir-team-task-logger`. D1 database name: `akir-xpress-team-tasks`.
 
-The initial build was deployed through the Cloudflare connector using its authenticated API. `deployment.json` is the non-secret upload metadata. Use the database ID from the intended Cloudflare account, apply `schema.sql` through D1, build, and upload `worker.mjs`, `push.mjs`, and `assets.mjs` as ES modules. Enable the Worker’s workers.dev subdomain and configure a `*/5 * * * *` Cron Trigger. The scheduled handler must remain enabled for reminders while the app is closed.
+The initial build was deployed through the Cloudflare connector using its authenticated API. `deployment.json` is the non-secret upload metadata. Use the database ID from the intended Cloudflare account, apply `schema.sql` **once to a new empty database**, build, and upload `worker.mjs`, `push.mjs`, `domain.mjs`, `workflows.mjs`, and `assets.mjs` as ES modules. Enable the Worker’s workers.dev subdomain and configure a `*/5 * * * *` Cron Trigger. The scheduled handler must remain enabled for reminders while the app is closed.
 
 Required bindings:
 
@@ -69,7 +79,7 @@ Required bindings:
 
 Credentials are **not** stored in this repository. Preserve secrets on redeploy. Rotating VAPID keys requires re-enabling notifications on every device. To rotate an individual password, change that person’s Cloudflare secret and delete their `sessions` rows to revoke prior sessions. Do not commit passwords, push subscription endpoints, exports of live task data, or Cloudflare credentials.
 
-## First-build limits and behavior
+## Limits and behavior
 
 - Up to 2,000 tasks and 10 subscribed devices per person. No permanent task deletion in this build.
 - Assignment notifications wait up to 24 hours for a phone to be enabled. Future reminders still run if an assignment notification expires.
@@ -85,3 +95,9 @@ Platform reference: [Apple Web Push requirements](https://webkit.org/blog/13878/
 ## Upgrade from shared-password version
 
 Apply `migrations/002_personal_accounts.sql` once to an existing version 1.0 database before uploading version 1.1. For a new database use `schema.sql` directly and do not apply this migration again. Configure the four new authentication secrets, deploy, and remove the unused `TEAM_PASSWORD` secret. The migration preserves tasks and jobs, revokes all old shared sessions, and marks legacy phone subscriptions unverified. Everyone must sign in with their own password and save Phone setup again. Password values are configured only in Cloudflare, never in source.
+
+## Upgrade from version 1.x to 2.0
+
+Apply `migrations/003_team_workflows.sql` once to the existing personal-account database, then upload the five modules above. This additive migration preserves task IDs, versions, sessions, subscriptions and existing jobs. It maps completed tasks to Completed progress and leaves legacy creators unknown. Do not rerun `schema.sql` on an existing database. Preserve all bindings and secrets and the five-minute Cron Trigger.
+
+Validation includes local SQLite integration tests and an isolated Cloudflare Worker/D1 run covering creator access, comments, checklist, blocked/completed progress, private 600 KB and 5 MB upload/download, monthly recurrence, activity and summary preferences. Browser checks cover creation, comments, checklist, file upload, history and a 390 px mobile layout. Test resources contain sample data only.
