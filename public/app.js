@@ -1,3 +1,4 @@
+import {dailyVerse} from './daily-verse.js';
 import {celebrateCompletion,clearCelebration} from './celebration.js';
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const companies={akir:'Akir Enterprises',xpress:'Xpress One Labs – Alabama'},people=['Ms. Tay','TJ','Felicia'];
@@ -14,10 +15,11 @@ function render(){
  const admin=state.user.role==='admin';$('#rail-avatar').textContent=initials(state.user.name);$('#rail-name').textContent=state.user.name;$('.rail-team').title=state.user.name;$('.rail-item[data-company=all]').title=admin?'All tasks':'My tasks';$('#account-label').textContent=state.user.name+(admin?' · Admin':'');$('#nav-task-label').textContent=admin?'All tasks':'My tasks';$('#person-filter').hidden=!admin;$('#person-filter').value=admin?$('#person-filter').value:'all';$('#phone-person').value=state.user.name;
  const base=state.tasks.filter(t=>company==='all'||t.company===company),open=base.filter(t=>t.status==='open'),done=base.filter(t=>t.status==='done');
  $('#stat-open').textContent=open.length;$('#stat-today').textContent=open.filter(t=>t.due_date===state.today).length;$('#stat-overdue').textContent=open.filter(t=>t.due_date<state.today).length;$('#stat-done').textContent=done.length;$('#open-count').textContent=open.length;$('#done-count').textContent=done.length;$('#all-count').textContent=state.tasks.filter(t=>t.status==='open').length;
- const title=company==='all'?(admin?'Your team.':'Your tasks.'):company==='akir'?'Akir Enterprises.':'Xpress One Labs.';
- $('#board-title').innerHTML=title+'<br>In good rhythm.';
+ $('#board-title').textContent='Good morning, '+state.user.name+'.';
+ const verse=dailyVerse(state.today);
+ $('#daily-verse-text').textContent='“'+verse.text+'”';
+ $('#daily-verse-reference').textContent=verse.reference+' · KJV';
  $('#breadcrumb').textContent=company==='all'?(admin?'All tasks':'My tasks'):companies[company];
- $('#board-subtitle').textContent=admin?'One place for your people, priorities, and what comes next.':'Your assigned tasks, all in one place. You can assign new work to anyone.';
  const percent=base.length?Math.round(done.length/base.length*100):0;
  $('#completion-label').textContent=percent+'% of '+base.length+' '+(base.length===1?'task':'tasks');
  $('#completion-segments').innerHTML=Array.from({length:10},(_,i)=>'<i class="'+(i<Math.round(percent/10)?'filled':'')+'"></i>').join('');
