@@ -1,0 +1,8 @@
+{
+  "main_module": "worker.mjs",
+  "compatibility_date": "2026-11-26",
+  "observability": { "enabled": true, "traces": { "enabled": true } },
+  "keep_bindings": ["secret_text", "plain_text", "d1"],
+  "bindings": [],
+  "tags": ["akir-team-task-logger"]
+}

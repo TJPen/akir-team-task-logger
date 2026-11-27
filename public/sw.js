@@ -1,0 +1,5 @@
+self.addEventListener('install',()=>self.skipWaiting());
+self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
+// No task responses or authenticated pages are cached on the device.
+self.addEventListener('push',event=>{let p={title:'Team Desk',body:'You have a task reminder.',url:'/'};try{if(event.data)p={...p,...event.data.json()};}catch{}event.waitUntil(self.registration.showNotification(p.title,{body:p.body,tag:p.tag||'team-task',icon:'/icon-192.png',badge:'/icon-192.png',data:{url:p.url},renotify:true}));});
+self.addEventListener('notificationclick',event=>{event.notification.close();let url=new URL(event.notification.data?.url||'/',self.location.origin);if(url.origin!==self.location.origin)url=new URL('/',self.location.origin);event.waitUntil((async()=>{const windows=await self.clients.matchAll({type:'window',includeUncontrolled:true});for(const win of windows){if(new URL(win.url).origin===url.origin){await win.navigate(url.href);return win.focus();}}return self.clients.openWindow(url.href);})());});
