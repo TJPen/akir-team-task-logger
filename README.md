@@ -29,9 +29,9 @@ Phone subscriptions can only be registered or tested for the signed-in person. S
 
 ## Source and verification
 
-Version 1.2 adds the supplied company logos, a dark glass interface, gold and cyan company accents, and responsive layouts. Hover, dialog, and background motion respects the device’s reduced-motion preference. Panels retain readable backgrounds when backdrop blur is unavailable.
+Version 1.3 follows the supplied visual reference with a light canvas, a charcoal navigation rail, sage and lime cards, oversized headings, and both company logos. The task board stays central, with company shortcuts and phone reminders alongside it. Completion progress and a seven-day due-date chart use only the tasks authorized for the signed-in account and the selected company. Frosted sign-in and dialog surfaces fall back to opaque backgrounds when blur is unavailable. Motion respects the device’s reduced-motion preference.
 
-Headings use [Sora](https://fonts.google.com/specimen/Sora); controls and task text use [Manrope](https://fonts.google.com/specimen/Manrope). Both fonts are self-hosted as Latin WOFF2 files under the SIL Open Font License. Their licenses are included in `public/sora-license.txt` and `public/manrope-license.txt`. Company logo images are optimized web copies of the supplied artwork.
+Headings, controls, and task text use [Manrope](https://fonts.google.com/specimen/Manrope); compact navigation initials use [Sora](https://fonts.google.com/specimen/Sora). Both fonts are self-hosted as Latin WOFF2 files under the SIL Open Font License. Their licenses are included in `public/sora-license.txt` and `public/manrope-license.txt`. Company logo images are optimized web copies of the supplied artwork.
 
 Requires Node.js 22.13+ (native `node:sqlite` for tests). No runtime npm dependencies.
 
