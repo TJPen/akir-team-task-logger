@@ -38,7 +38,7 @@ test('Web Push payload decrypts using independent Node crypto; VAPID verifies',a
  const decipher=createDecipheriv('aes-128-gcm',cek,nonce);decipher.setAuthTag(content.subarray(-16));const plain=Buffer.concat([decipher.update(content.subarray(0,-16)),decipher.final()]);assert.equal(plain.at(-1),2);assert.deepEqual(JSON.parse(plain.subarray(0,-1)),payload);
  const request=await pushRequest(sub,payload,f.env),jwt=request.headers.Authorization.match(/t=([^,]+)/)[1],parts=jwt.split('.'),vapidPub=createPublicKey({key:JSON.parse(f.env.VAPID_PRIVATE),format:'jwk'});
  assert(verify('sha256',Buffer.from(parts[0]+'.'+parts[1]),{key:vapidPub,dsaEncoding:'ieee-p1363'},Buffer.from(parts[2],'base64url')));
- assert.equal(JSON.parse(Buffer.from(parts[1],'base64url')).aud,'https://fcm.googleapis.com');assert.equal(request.redirect,'error');f.db.close();
+ assert.equal(JSON.parse(Buffer.from(parts[1],'base64url')).aud,'https://fcm.googleapis.com');assert.equal(request.redirect,'manual');f.db.close();
 });
 test('authentication, CSRF, persistence, edit conflicts, completion and reopen',async()=>{
  const f=await fixture();assert.equal((await f.request('/api/state')).status,401);assert.equal((await f.request('/api/login','POST',{password:'wrong'})).status,401);const login=await f.login();assert.match(login.headers.get('set-cookie'),/HttpOnly; Secure; SameSite=Strict/);
@@ -62,6 +62,24 @@ test('subscription validation, cancellation, deduplication and push retry',async
  code=201;await processJobs(f.env,Date.now()+360000);assert.equal(calls,2);await processJobs(f.env,Date.now()+720000);assert.equal(calls,2);assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM deliveries').get().n,1);
  await f.request('/api/tasks/'+id,'PATCH',{version:1,status:'done'});await f.drain();await processJobs(f.env,Date.now()+3*86400000);assert.equal(calls,2);
  await f.request('/api/subscriptions/remove','POST',{endpoint:subscription.endpoint});assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM subscriptions').get().n,0);
+ }finally{globalThis.fetch=original;f.db.close();}
+});
+
+test('self-assigned Apple push uses Workers-compatible redirects and never accepts a redirect as delivery',async()=>{
+ const f=await fixture();await f.login();
+ const receiver=generateKeyPairSync('ec',{namedCurve:'prime256v1'}),jwk=receiver.publicKey.export({format:'jwk'}),pub=Buffer.concat([Buffer.from([4]),Buffer.from(jwk.x,'base64url'),Buffer.from(jwk.y,'base64url')]);
+ const subscription={endpoint:'https://web.push.apple.com/test',keys:{p256dh:pub.toString('base64url'),auth:Buffer.alloc(16,4).toString('base64url')}};
+ await f.request('/api/subscriptions','POST',{subscription});await f.drain();
+ const original=globalThis.fetch;let calls=0;
+ globalThis.fetch=async(url,init)=>{
+  assert.equal(url,subscription.endpoint);assert.equal(init.redirect,'manual');calls++;
+  return calls===1?new Response(null,{status:307,headers:{Location:'https://example.test/untrusted'}}):new Response(null,{status:201});
+ };
+ try{
+  assert.equal((await f.request('/api/tasks','POST',sample())).status,201);await f.drain();
+  assert.equal(calls,1);const job=f.db.prepare("SELECT * FROM jobs WHERE kind='assigned'").get();
+  assert.equal(job.state,'pending');assert.match(job.last_error,/307/);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,0);
+  await processJobs(f.env,Date.now()+360000);assert.equal(calls,2);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,1);
  }finally{globalThis.fetch=original;f.db.close();}
 });
 

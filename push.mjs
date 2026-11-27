@@ -36,6 +36,8 @@ export async function pushRequest(subscription,payload,env) {
  const data=b64(bytes(JSON.stringify({typ:'JWT',alg:'ES256'})))+'.'+b64(bytes(JSON.stringify({aud:new URL(subscription.endpoint).origin,exp:Math.floor(Date.now()/1000)+3600,sub:env.APP_ORIGIN})));
  const key=await crypto.subtle.importKey('jwk',JSON.parse(env.VAPID_PRIVATE),{name:'ECDSA',namedCurve:'P-256'},false,['sign']);
  const signature=await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},key,bytes(data));
- return {method:'POST',redirect:'error',headers:{Authorization:`vapid t=${data}.${b64(signature)}, k=${env.VAPID_PUBLIC}`,'Content-Encoding':'aes128gcm','Content-Type':'application/octet-stream',TTL:'3600',Urgency:'normal'},body:await encryptPayload(subscription,payload),signal:AbortSignal.timeout(8000)};
+ // Workers rejects redirect:'error' before sending. Manual prevents forwarding
+ // VAPID credentials; the delivery queue treats any 3xx response as a failure.
+ return {method:'POST',redirect:'manual',headers:{Authorization:`vapid t=${data}.${b64(signature)}, k=${env.VAPID_PUBLIC}`,'Content-Encoding':'aes128gcm','Content-Type':'application/octet-stream',TTL:'3600',Urgency:'normal'},body:await encryptPayload(subscription,payload),signal:AbortSignal.timeout(8000)};
 }
 export async function sendPush(subscription,payload,env) { return fetch(subscription.endpoint,await pushRequest(subscription,payload,env)); }
