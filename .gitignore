@@ -1,0 +1,6 @@
+node_modules/
+.env*
+.dev.vars*
+*.credentials.json
+assets.mjs
+.DS_Store
