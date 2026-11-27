@@ -37,3 +37,8 @@ label{display:block;font-size:12px;font-weight:600;margin-bottom:9px}input,selec
 .overdue-row .task-check:hover{background:#fbd4d0;border-color:#9c2926}
 .overdue-label{display:block;font-size:9px;font-weight:800;line-height:1.4;margin-bottom:3px}
 @media(prefers-reduced-motion:reduce){.task-row.overdue-row{transition:none}}
+
+/* The approved Akir / Xpress monogram, shared across the app. */
+.brand-icon{border:0;background:#f8f7f2;overflow:hidden}
+.brand-icon img,.login-lock img{display:block;width:100%;height:100%;object-fit:contain}
+.login-lock{background:#f8f7f2;overflow:hidden;border:1px solid #dedfd8}
