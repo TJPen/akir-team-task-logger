@@ -13,14 +13,14 @@ async function load(){const generation=viewGeneration,view=taskView;const next=a
 function render(){
  document.body.dataset.company=company;
  const admin=state.user.role==='admin';$('#rail-avatar').textContent=initials(state.user.name);$('#rail-name').textContent=state.user.name;$('.rail-team').title=state.user.name;$('.rail-item[data-company=all]').title=admin?'All tasks':'My tasks';$('#account-label').textContent=state.user.name+(admin?' · Admin':'');$('#nav-task-label').textContent=admin?'All tasks':'My tasks';$('#person-filter').hidden=!admin;$('#person-filter').value=admin?$('#person-filter').value:'all';$('#phone-person').value=state.user.name;
- $$('[data-view]').forEach(b=>{b.classList.toggle('active',b.dataset.view===taskView);if(b.dataset.view==='default')b.textContent=admin?'All tasks':'Assigned to me';if(b.dataset.view==='mine')b.hidden=!admin;});$('#digest-enabled').checked=state.preferences?.digest_enabled!==false;
+ $$('[data-view]').forEach(b=>{b.classList.toggle('active',b.dataset.view===taskView);b.setAttribute('aria-pressed',String(b.dataset.view===taskView));if(b.dataset.view==='default')b.textContent=admin?'All tasks':'Assigned to me';if(b.dataset.view==='mine')b.hidden=!admin;});$('#digest-enabled').checked=state.preferences?.digest_enabled!==false;
  const base=state.tasks.filter(t=>company==='all'||t.company===company),open=base.filter(t=>t.status==='open'),done=base.filter(t=>t.status==='done');
  $('#stat-open').textContent=open.length;$('#stat-today').textContent=open.filter(t=>t.due_date===state.today).length;$('#stat-overdue').textContent=open.filter(t=>t.due_date<state.today).length;$('#stat-done').textContent=done.length;$('#open-count').textContent=open.length;$('#done-count').textContent=done.length;$('#all-count').textContent=state.tasks.filter(t=>t.status==='open').length;
  $('#board-title').textContent='Good morning, '+state.user.name+'.';
  const verse=dailyVerse(state.today);
  $('#daily-verse-text').textContent='“'+verse.text+'”';
  $('#daily-verse-reference').textContent=verse.reference+' · KJV';
- $('#breadcrumb').textContent=company==='all'?(admin?'All tasks':'My tasks'):companies[company];
+ $('#breadcrumb').textContent=company==='all'?(taskView==='created'?'Assigned by me':taskView==='mine'||!admin?'My tasks':'All tasks'):companies[company];
  const percent=base.length?Math.round(done.length/base.length*100):0;
  $('#completion-label').textContent=percent+'% of '+base.length+' '+(base.length===1?'task':'tasks');
  $('#completion-segments').innerHTML=Array.from({length:10},(_,i)=>'<i class="'+(i<Math.round(percent/10)?'filled':'')+'"></i>').join('');
@@ -33,8 +33,8 @@ function render(){
  $('#task-list').innerHTML=tasks.map(t=>{
  const due=t.due_date===state.today?'Today':t.due_date===tomorrow()?'Tomorrow':new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}).format(new Date(t.due_date+'T12:00:00Z'));
  const overdue=t.status==='open'&&t.due_date<state.today;
- const notify=t.status==='done'?'':!state.devices.some(d=>d.person===t.assignee)?'Phone setup needed':t.notification_state==='accepted'?'Push service accepted':t.notification_state==='expired'?'Reminder expired':'Reminder queued';
- return `<article class="task-row ${t.status==='done'?'done-row':overdue?'overdue-row':''}"><div class="task-main"><button class="task-check ${t.status==='done'?'done':''}" data-toggle="${t.id}" aria-label="${t.status==='done'?'Reopen':'Complete'} task: ${escape(t.description.slice(0,80))}">${t.status==='done'?'✓':''}</button><div><button type="button" class="task-title task-link" data-detail="${t.id}">${escape(t.description)}</button><div class="task-flags"><span class="priority-badge priority-${t.priority||'normal'}">${escape(t.priority||'normal')}</span><span class="progress-badge progress-${t.progress||'not_started'}">${progressName(t.progress)}</span>${t.recurrence?`<span class="repeat-badge">Repeats ${escape(t.recurrence)}</span>`:''}</div>${t.progress==='blocked'?`<p class="blocked-preview">${escape(t.blocked_reason)}</p>`:''}<div class="task-meta"><span class="badge ${t.company}">${escape(companies[t.company])}</span><span class="push-status">${notify}</span>${t.checklist_total?`<span class="push-status">Checklist ${t.checklist_done}/${t.checklist_total}</span>`:''}${t.comment_count?`<span class="push-status">${t.comment_count} ${t.comment_count===1?'comment':'comments'}</span>`:''}${t.attachment_count?`<span class="push-status">${t.attachment_count} ${t.attachment_count===1?'file':'files'}</span>`:''}</div></div></div><div class="assignee"><span class="avatar ${cls(t.assignee)}">${initials(t.assignee)}</span>${escape(t.assignee)}</div><div class="due ${overdue?'overdue':t.due_date===state.today?'today':''}">${overdue?'<span class="overdue-label">Overdue</span>':''}${due}</div><button class="edit-task" data-edit="${t.id}" aria-label="Edit task: ${escape(t.description.slice(0,80))}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15Z"/></svg></button></article>`;
+ const select=(field,label,options,value)=>`<label class="row-field">${label}<select data-task-field="${field}" data-task-id="${t.id}" class="row-select ${field}-${value}" aria-label="${label}: ${escape(t.description)}">${options.map(([v,name])=>`<option value="${v}" ${v===value?'selected':''}>${name}</option>`).join('')}</select></label>`;
+ return `<article class="task-row ${t.status==='done'?'done-row':overdue?'overdue-row':''}" data-row-id="${t.id}"><div class="task-main"><button type="button" class="task-title task-link" data-detail="${t.id}">${escape(t.description)}</button><div class="task-meta"><span class="badge ${t.company}">${escape(companies[t.company])}</span><span class="due ${overdue?'overdue':t.due_date===state.today?'today':''}">${overdue?'Overdue · ':'Due '}${due}</span></div>${t.progress==='blocked'?`<p class="blocked-preview">Blocked: ${escape(t.blocked_reason)}</p>`:''}${t.recurrence?`<span class="row-note">Repeats ${escape(t.recurrence)}</span>`:''}${t.checklist_total||t.comment_count||t.attachment_count?`<span class="row-note">${[t.checklist_total?`Checklist ${t.checklist_done}/${t.checklist_total}`:'',t.comment_count?`${t.comment_count} ${t.comment_count===1?'comment':'comments'}`:'',t.attachment_count?`${t.attachment_count} ${t.attachment_count===1?'file':'files'}`:''].filter(Boolean).join(' · ')}</span>`:''}</div>${select('progress','Status',[['not_started','Not started'],['in_progress','In progress'],['blocked','Blocked'],['completed','Completed']],t.progress||'not_started')}${select('priority','Priority',[['normal','Normal'],['high','High'],['urgent','Urgent']],t.priority||'normal')}${select('assignee','Assigned to',people.map(p=>[p,p]),t.assignee)}<button type="button" class="delete-task" data-delete="${t.id}" aria-label="Delete task: ${escape(t.description)}">Delete</button></article>`;
  }).join('');
  $('#empty').hidden=tasks.length>0;$('#empty h2').textContent=state.tasks.length===0?'A clear desk. A fresh start.':status==='done'?'Good work starts here.':'All clear in this view.';$('#empty p').innerHTML=state.tasks.length===0?'Add your first task, pick a teammate,<br>and we’ll help keep it on track.':status==='done'?'Completed tasks will appear here.':'No tasks match these filters.<br>Choose another view or add a task.';
  $('#result-count').textContent=tasks.length+' '+(tasks.length===1?'task':'tasks')+(special==='today'?' · Due today':special==='overdue'?' · Overdue':'');
@@ -46,21 +46,58 @@ function notice(){const p=$('#assignee').value,count=state.devices.find(d=>d.per
 function openTask(t=null,series=null){editing=t;$('#task-form').reset();$('#task-dialog-title').textContent=t?'Edit task':'Add a task';$('#save-task').textContent=t?'Save changes':'Create task';$('#company').value=t?.company||(company==='all'?'akir':company);$('#assignee').value=t?.assignee||'';$('#due-date').value=t?.due_date||state.today;$('#description').value=t?.description||'';$('#char-count').textContent=$('#description').value.length+' / 2,000';$('#priority').value=t?.priority||'normal';$('#progress').value=t?.progress||(t?.status==='done'?'completed':'not_started');$('#blocked-reason').value=t?.blocked_reason||'';$('#recurrence').value=series?(series.active?series.cadence:'none'):(t?.recurrence||'none');$('#recurrence').disabled=!!(series&&series.current_task_id!==t.id);$('#new-checklist-field').hidden=!!t;$('#new-checklist').value='';updateBlockedField();$('#task-error').textContent='';notice();$('#task-dialog').showModal();}
 $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const b=e.submitter;b.disabled=true;$('#login-error').textContent='';try{await api('/login','POST',{password:$('#password').value});$('#password').value='';await load();}catch(e){$('#login-error').textContent=e.message;}finally{b.disabled=false;}});
 $('#logout').onclick=async()=>{try{const sub=registration?await registration.pushManager.getSubscription().catch(()=>null):null;await api('/logout','POST',{endpoint:sub?.endpoint});showLogin();if(sub)await sub.unsubscribe().catch(()=>{});localStorage.removeItem('team-phone-person');toast('Signed out. Notifications on this device are disconnected.');}catch(e){toast(e.message);}};
-$$('button[data-company]').forEach(b=>b.onclick=()=>{company=b.dataset.company;special='';render();});
+$$('button[data-company]').forEach(b=>b.onclick=async()=>{company=b.dataset.company;special='';if(b.classList.contains('rail-item')&&company==='all'){taskView='default';status='open';$('#search').value='';for(const id of ['progress-filter','priority-filter','person-filter'])$('#'+id).value='all';try{await load();}catch(e){toast(e.message);}}else render();});
 $$('[data-status]').forEach(b=>b.onclick=()=>{status=b.dataset.status;special='';render();});
 $$('[data-stat]').forEach(b=>b.onclick=()=>{status=b.dataset.stat==='done'?'done':'open';special=['today','overdue'].includes(b.dataset.stat)?b.dataset.stat:'';render();});
 $('#progress-filter').onchange=render;$('#priority-filter').onchange=render;$('#person-filter').onchange=render;$('#search').oninput=render;$('#new-task').onclick=()=>openTask();$('#empty-add').onclick=()=>openTask();$('#refresh').onclick=()=>load().then(()=>toast('Workspace refreshed.')).catch(e=>toast(e.message));
 $$('[data-close]').forEach(b=>b.onclick=()=>$('#'+b.dataset.close).close());$('#assignee').onchange=notice;$('#description').oninput=()=>$('#char-count').textContent=$('#description').value.length+' / 2,000';
 $('#task-form').addEventListener('submit',async e=>{e.preventDefault();const b=e.submitter;b.disabled=true;$('#task-error').textContent='';try{const data={company:$('#company').value,assignee:$('#assignee').value,due_date:$('#due-date').value,description:$('#description').value,priority:$('#priority').value,progress:$('#progress').value,blocked_reason:$('#blocked-reason').value};if(!$('#recurrence').disabled)data.recurrence=$('#recurrence').value;if(!editing)data.checklist=$('#new-checklist').value.split('\n').map(x=>x.trim()).filter(Boolean);if(editing)data.version=editing.version;await api(editing?'/tasks/'+editing.id:'/tasks',editing?'PATCH':'POST',data);$('#task-dialog').close();await load();toast(state.user.role!=='admin'&&data.assignee!==state.user.name?`Assigned to ${data.assignee}. You can follow it in Assigned by me.`:editing?'Task updated.':'Task created. Your team’s on it.');}catch(e){$('#task-error').textContent=e.message;}finally{b.disabled=false;}});
-$('#task-list').onclick=async e=>{const detail=e.target.closest('[data-detail]');if(detail){openDetails(detail.dataset.detail);return;}const edit=e.target.closest('[data-edit]'),toggle=e.target.closest('[data-toggle]');if(edit){openDetails(edit.dataset.edit,true);return;}if(toggle){const t=state.tasks.find(t=>t.id===toggle.dataset.toggle),completing=t.status==='open',generation=viewGeneration;
-toggle.disabled=true;
-try{
-  await api('/tasks/'+t.id,'PATCH',{version:t.version,status:completing?'done':'open'});
+let pendingDelete=null,pendingBlocked=null;
+async function updateRow(t,changes,source){
+ const generation=viewGeneration,rect=source?.getBoundingClientRect();
+ const row=source?.closest('.task-row');row?.querySelectorAll('button,select').forEach(el=>el.disabled=true);
+ try{
+  await api('/tasks/'+t.id,'PATCH',{version:t.version,...changes});
   if(generation!==viewGeneration)return;
-  toast(completing?'Task complete. Nice work!':'Task reopened.',completing);
-  if(completing){try{celebrateCompletion(toggle.getBoundingClientRect());}catch{clearCelebration();}}
-  try{await load();}catch{toast('Saved. Refresh the board to see the latest task list.');}
-}catch(e){toast(e.message);await load().catch(()=>{});}finally{toggle.disabled=false;}}};
+  const completed=changes.progress==='completed'&&t.status!=='done';
+  toast(completed?'Task complete. Nice work!':changes.assignee?`Assigned to ${changes.assignee}.`:'Task updated.',completed);
+  if(completed){try{celebrateCompletion(rect);}catch{clearCelebration();}}
+  await load();
+ }catch(e){if(generation===viewGeneration){toast(e.message);await load().catch(()=>{});}}
+ finally{row?.querySelectorAll('button,select').forEach(el=>el.disabled=false);}
+}
+$('#task-list').onchange=e=>{
+ const control=e.target.closest('[data-task-field]');if(!control)return;
+ const t=state.tasks.find(t=>t.id===control.dataset.taskId),field=control.dataset.taskField;
+ if(!t||control.value===t[field])return;
+ if(field==='progress'&&control.value==='blocked'){
+  pendingBlocked={task:t,source:control};control.value=t.progress;
+  $('#inline-blocked-reason').value=t.blocked_reason||'';$('#blocked-dialog').showModal();return;
+ }
+ updateRow(t,{[field]:control.value},control);
+};
+$('#task-list').onclick=e=>{
+ const detail=e.target.closest('[data-detail]');if(detail){openDetails(detail.dataset.detail);return;}
+ const remove=e.target.closest('[data-delete]');if(!remove)return;
+ pendingDelete=state.tasks.find(t=>t.id===remove.dataset.delete);
+ $('#delete-task-name').textContent=pendingDelete.description;
+ $('#delete-repeat-note').hidden=!pendingDelete.recurrence;
+ $('#delete-error').textContent='';$('#delete-dialog').showModal();
+};
+$('#blocked-form').onsubmit=async e=>{
+ e.preventDefault();const pending=pendingBlocked;if(!pending)return;
+ const reason=$('#inline-blocked-reason').value.trim();if(!reason){$('#inline-blocked-reason').focus();return;}
+ $('#blocked-dialog').close();await updateRow(pending.task,{progress:'blocked',blocked_reason:reason},pending.source);
+};
+$('#blocked-dialog').addEventListener('close',()=>pendingBlocked=null);
+$('#delete-form').onsubmit=async e=>{
+ e.preventDefault();if(!pendingDelete)return;
+ const t=pendingDelete,generation=viewGeneration,button=$('#confirm-delete');button.disabled=true;$('#delete-error').textContent='';
+ try{await api('/tasks/'+t.id,'DELETE',{version:t.version});if(generation!==viewGeneration)return;$('#delete-dialog').close();toast('Task deleted. Its reminders have stopped.');await load();}
+ catch(error){if(generation===viewGeneration){$('#delete-error').textContent=error.message;await load().catch(()=>{});}}
+ finally{button.disabled=false;}
+};
+$('#delete-dialog').addEventListener('close',()=>pendingDelete=null);
 async function setupWorker(){if('serviceWorker' in navigator){registration=await navigator.serviceWorker.register('/sw.js');await navigator.serviceWorker.ready;}}
 const ios=()=>/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 async function deviceStatus(){
@@ -89,7 +126,7 @@ setInterval(()=>{if(!$('#app-view').hidden&&!document.hidden&&!$$('dialog[open]'
 function progressName(value){return ({not_started:'Not started',in_progress:'In progress',blocked:'Blocked',completed:'Completed'})[value]||'Not started';}
 function updateBlockedField(){const blocked=$('#progress').value==='blocked';$('#blocked-field').hidden=!blocked;$('#blocked-reason').required=blocked;}
 $('#progress').onchange=updateBlockedField;
-$$('[data-view]').forEach(b=>b.onclick=async()=>{taskView=b.dataset.view;special='';$('#progress-filter').value='all';try{await load();}catch(e){toast(e.message);}});
+$$('[data-view]').forEach(b=>b.onclick=async()=>{taskView=b.dataset.view;company='all';status='open';special='';$('#progress-filter').value='all';$('#priority-filter').value='all';$('#person-filter').value='all';$('#search').value='';$('#more-filters').open=false;try{await load();}catch(e){toast(e.message);}});
 function stamp(time){return new Intl.DateTimeFormat('en-US',{timeZone:'America/Chicago',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}).format(new Date(time))+' CT';}
 async function openDetails(id,edit=false){
  const generation=++detailGeneration,account=viewGeneration;$('#detail-error').textContent='';

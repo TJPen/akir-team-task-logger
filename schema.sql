@@ -49,3 +49,6 @@ CREATE TABLE attachment_chunks(attachment_id TEXT NOT NULL REFERENCES attachment
 CREATE TABLE user_preferences(person TEXT PRIMARY KEY,digest_enabled INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE digest_jobs(id TEXT PRIMARY KEY,person TEXT NOT NULL,date TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,lease_until INTEGER NOT NULL DEFAULT 0,last_error TEXT);
 CREATE TABLE digest_deliveries(job_id TEXT NOT NULL REFERENCES digest_jobs(id),subscription_id TEXT NOT NULL,accepted_at INTEGER NOT NULL,PRIMARY KEY(job_id,subscription_id));
+
+-- Remove tasks from all active views without destroying their history.
+ALTER TABLE tasks ADD COLUMN deleted_at INTEGER;

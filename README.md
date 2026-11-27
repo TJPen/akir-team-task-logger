@@ -101,3 +101,11 @@ Apply `migrations/002_personal_accounts.sql` once to an existing version 1.0 dat
 Apply `migrations/003_team_workflows.sql` once to the existing personal-account database, then upload the five modules above. This additive migration preserves task IDs, versions, sessions, subscriptions and existing jobs. It maps completed tasks to Completed progress and leaves legacy creators unknown. Do not rerun `schema.sql` on an existing database. Preserve all bindings and secrets and the five-minute Cron Trigger.
 
 Validation includes local SQLite integration tests and an isolated Cloudflare Worker/D1 run covering creator access, comments, checklist, blocked/completed progress, private 600 KB and 5 MB upload/download, monthly recurrence, activity and summary preferences. Browser checks cover creation, comments, checklist, file upload, history and a 390 px mobile layout. Test resources contain sample data only.
+
+## Upgrade from 2.0 to 2.1
+
+Apply `migrations/004_task_deletion.sql` once before deploying the five Worker modules. New databases use the full `schema.sql` instead. Existing tasks, sessions, subscriptions, and VAPID keys are preserved.
+
+The board puts status, priority, and assignee dropdowns directly on each task, with larger labels and responsive phone controls. Clicking a task opens its comments, files, checklist, and history. Assigned to me clears company, search, and other filters and opens the signed-in person's active task list.
+
+Delete requires confirmation and the current task version. Admins, the current assignee, and the creator can delete accessible tasks. Deletion retains internal records and history, hides the task and its files from all app views, and cancels pending reminders. Deleting the latest occurrence stops future repeats; deleting an older occurrence leaves its series running. There is no in-app restore control.

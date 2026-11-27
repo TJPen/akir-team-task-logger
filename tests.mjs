@@ -213,3 +213,44 @@ test('scheduled recurrence, reminders and three summaries fit the free-plan quer
  try{f.resetCount();await worker.scheduled({scheduledTime:now},f.env);assert(f.queryCount()<=50,'Scheduled queries: '+f.queryCount());assert.equal(f.db.prepare('SELECT COUNT(*) n FROM digest_deliveries').get().n,3);}
  finally{globalThis.fetch=original;f.db.close();}
 });
+
+test('deletion enforces access and versions, stops reminders, and hides private content',async()=>{
+ const f=await fixture();await f.login('Ms. Tay');
+ const {id}=await (await f.request('/api/tasks','POST',{...sample(),assignee:'Felicia',due_date:centralDate(Date.now())})).json();await f.drain();
+ const file=await (await f.request('/api/tasks/'+id+'/attachments','POST',null,{raw:new TextEncoder().encode('private'),headers:{'x-file-name':'note.txt'}})).json();
+ const {id:other}=await (await f.request('/api/tasks','POST',{...sample(),assignee:'Ms. Tay'})).json();await f.drain();
+ await f.login('Felicia');assert.equal((await f.request('/api/tasks/'+other,'DELETE',{version:1})).status,404);
+ assert.equal((await f.request('/api/tasks/'+id,'DELETE',{version:2})).status,409);
+ assert.equal((await f.request('/api/tasks/'+id,'DELETE',{version:1},{noOrigin:true})).status,403);
+ assert.equal((await f.request('/api/tasks/'+id,'DELETE',{version:1})).status,200);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM jobs WHERE task_id=? AND state='pending'").get(id).n,0);
+ assert(f.db.prepare('SELECT deleted_at FROM tasks WHERE id=?').get(id).deleted_at);
+ assert.equal((await f.request('/api/tasks/'+id)).status,404);
+ assert.equal((await f.request('/api/tasks/'+id+'/attachments/'+file.id)).status,404);
+ assert.equal((await f.request('/api/tasks/'+id,'PATCH',{version:2,priority:'urgent'})).status,404);
+ assert.equal((await f.request('/api/tasks/'+id+'/comments','POST',{body:'No longer accessible'})).status,404);
+ for(const person of ['TJ','Ms. Tay','Felicia']){await f.login(person);for(const view of ['default','mine','created']){const board=await (await f.request('/api/state?view='+view)).json();assert(!board.tasks.some(t=>t.id===id));}const summary=await (await f.request('/api/summary')).json();assert(![...summary.due_today,...summary.overdue].some(t=>t.id===id));}
+ assert.equal(f.db.prepare('SELECT deleted_at FROM tasks WHERE id=?').get(other).deleted_at,null);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM activity WHERE task_id=? AND event='deleted'").get(id).n,1);await f.drain();f.db.close();
+});
+test('deleting the latest repeating task stops repeats; deleting older occurrences preserves the series',async()=>{
+ const f=await fixture();await f.login();
+ const {id}=await (await f.request('/api/tasks','POST',{...sample(),recurrence:'daily'})).json();await f.drain();
+ await f.request('/api/tasks/'+id,'PATCH',{version:1,progress:'completed'});await f.drain();
+ const series=f.db.prepare('SELECT * FROM recurring_series').get();assert.notEqual(series.current_task_id,id);
+ assert.equal((await f.request('/api/tasks/'+id,'DELETE',{version:2})).status,200);
+ assert.equal(f.db.prepare('SELECT active FROM recurring_series').get().active,1);
+ assert.equal((await f.request('/api/tasks/'+series.current_task_id,'DELETE',{version:1})).status,200);
+ assert.equal(f.db.prepare('SELECT active FROM recurring_series').get().active,0);
+ await processRecurrences(f.env,jobStatements,Date.now()+10*86400000);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM tasks').get().n,2);f.db.close();
+});
+test('inline status, priority and reassignment updates appear in the correct personal lists',async()=>{
+ const f=await fixture();await f.login('Ms. Tay');const {id}=await (await f.request('/api/tasks','POST',{...sample(),assignee:'Ms. Tay'})).json();await f.drain();
+ for(const [version,change] of [[1,{priority:'urgent'}],[2,{progress:'in_progress'}],[3,{assignee:'Felicia'}]]){assert.equal((await f.request('/api/tasks/'+id,'PATCH',{version,...change})).status,200);await f.drain();}
+ assert.equal((await (await f.request('/api/state?view=mine')).json()).tasks.length,0);
+ assert.equal((await (await f.request('/api/state?view=created')).json()).tasks.length,1);
+ await f.login('Felicia');const mine=await (await f.request('/api/state?view=mine')).json();assert.equal(mine.tasks[0].priority,'urgent');assert.equal(mine.tasks[0].progress,'in_progress');
+ assert.equal((await f.request('/api/tasks/'+id,'PATCH',{version:4,progress:'blocked'})).status,400);
+ assert.equal((await f.request('/api/tasks/'+id,'PATCH',{version:4,progress:'completed'})).status,200);await f.drain();assert.equal(f.db.prepare('SELECT status FROM tasks WHERE id=?').get(id).status,'done');f.db.close();
+});

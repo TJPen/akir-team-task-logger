@@ -19,7 +19,7 @@ async function session(req,env){const token=cookie(req);if(!token)return false;c
 export function jobStatements(env,t,kind,now,expectedVersion=t.version){
  const before=new Date(Date.parse(t.due_date+'T12:00:00Z')-DAY).toISOString().slice(0,10);
  const specs=[...(kind==='silent'?[]:[[kind,now,now+DAY]]),['before',morning(before),morning(before)+DAY],['due',morning(t.due_date),morning(t.due_date)+DAY]];
- return specs.filter(([k,at])=>k===kind||at>now).map(([k,at,expiry])=>env.DB.prepare("INSERT OR IGNORE INTO jobs(id,task_id,version,kind,run_at,expires_at) SELECT ?,id,version,?,?,? FROM tasks WHERE id=? AND version=? AND status='open'").bind(`${t.id}:${expectedVersion}:${k}`,k,at,expiry,t.id,expectedVersion));
+ return specs.filter(([k,at])=>k===kind||at>now).map(([k,at,expiry])=>env.DB.prepare("INSERT OR IGNORE INTO jobs(id,task_id,version,kind,run_at,expires_at) SELECT ?,id,version,?,?,? FROM tasks WHERE id=? AND version=? AND deleted_at IS NULL AND status='open'").bind(`${t.id}:${expectedVersion}:${k}`,k,at,expiry,t.id,expectedVersion));
 }
 export async function processJobs(env,now=Date.now(),limit=2){
  await env.DB.batch([
@@ -28,14 +28,14 @@ export async function processJobs(env,now=Date.now(),limit=2){
  const {results:jobs}=await env.DB.prepare("SELECT * FROM jobs WHERE state='pending' AND run_at<=? AND expires_at>? AND lease_until<? ORDER BY run_at LIMIT ?").bind(now,now,now,limit).all();
  for(const job of jobs){
  const claim=await env.DB.prepare("UPDATE jobs SET lease_until=?,attempts=attempts+1 WHERE id=? AND state='pending' AND lease_until<?").bind(now+120000,job.id,now).run();if(!claim.meta.changes)continue;
- const t=await env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(job.task_id).first();
+ const t=await env.DB.prepare('SELECT * FROM tasks WHERE id=? AND deleted_at IS NULL').bind(job.task_id).first();
  if(!t||t.status!=='open'||t.version!==job.version){await env.DB.prepare("UPDATE jobs SET state='cancelled' WHERE id=?").bind(job.id).run();continue;}
  const {results:subs}=await env.DB.prepare('SELECT * FROM subscriptions WHERE person=? AND verified=1 LIMIT 10').bind(t.assignee).all();
  const {results:delivered}=await env.DB.prepare('SELECT subscription_id FROM deliveries WHERE job_id=?').bind(job.id).all();
  const remaining=subs.filter(s=>!delivered.some(d=>d.subscription_id===s.id));
  let pending=subs.length===0||remaining.length>2,error=subs.length===0?'Waiting for an enabled phone':null;
  for(const sub of remaining.slice(0,2)){
- const current=await env.DB.prepare("SELECT id FROM tasks WHERE id=? AND version=? AND status='open'").bind(t.id,t.version).first();if(!current)break;
+ const current=await env.DB.prepare("SELECT id FROM tasks WHERE id=? AND version=? AND deleted_at IS NULL AND status='open'").bind(t.id,t.version).first();if(!current)break;
  try{
  const heading={assigned:'New task for you',updated:'Your task was updated',before:'Due tomorrow',due:'Due today'}[job.kind];
  const res=await sendPush(sub,{title:heading,body:`${COMPANIES[t.company]} · ${t.description.slice(0,180)} · Due ${t.due_date}`,tag:job.id,url:`/?task=${t.id}`},env);
@@ -77,7 +77,7 @@ async function route(req,env,ctx){
  (SELECT COUNT(*) FROM comments c WHERE c.task_id=t.id) comment_count,
  (SELECT COUNT(*) FROM attachments a WHERE a.task_id=t.id) attachment_count,
  (SELECT cadence FROM recurring_series s WHERE s.id=t.series_id AND s.active=1) recurrence
- FROM tasks t WHERE ${where} ORDER BY status,CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,due_date,created_at DESC LIMIT 2000`).bind(user.name),env.DB.prepare('SELECT person,COUNT(*) AS count FROM subscriptions WHERE verified=1 GROUP BY person'),env.DB.prepare('SELECT digest_enabled FROM user_preferences WHERE person=?').bind(user.name)]);
+ FROM tasks t WHERE t.deleted_at IS NULL AND (${where}) ORDER BY status,CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,due_date,created_at DESC LIMIT 2000`).bind(user.name),env.DB.prepare('SELECT person,COUNT(*) AS count FROM subscriptions WHERE verified=1 GROUP BY person'),env.DB.prepare('SELECT digest_enabled FROM user_preferences WHERE person=?').bind(user.name)]);
  return json({user,tasks:tasks.results,devices:devices.results,preferences:{digest_enabled:preferences.results[0]?.digest_enabled!==0},today:centralDate(now),vapid:env.VAPID_PUBLIC,view});
  }
  const workflowResponse=await workflowRoute(req,env,ctx,user,{body,jobStatements,processJobs},now);

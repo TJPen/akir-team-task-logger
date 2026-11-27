@@ -2,7 +2,7 @@ import {PEOPLE,COMPANIES,PROGRESS,DAY,fail,centralDate,morning,validateTask,vali
 import {sendPush} from './push.mjs';
 const json=(data,status=200)=>Response.json(data,{status});
 const uid=()=>crypto.randomUUID();
-export const ACCESS="(?='TJ' OR assignee=? OR created_by=?)";
+export const ACCESS="deleted_at IS NULL AND (?='TJ' OR assignee=? OR created_by=?)";
 export async function accessibleTask(env,id,user){const t=await env.DB.prepare(`SELECT * FROM tasks WHERE id=? AND ${ACCESS}`).bind(id,user.name,user.name,user.name).first();if(!t)fail('Task not found.',404);return t;}
 function gate(env,id,user){return env.DB.prepare(`SELECT id FROM tasks WHERE id=? AND ${ACCESS}`).bind(id,user.name,user.name,user.name);}
 function eventStmt(env,t,actor,event,detail,now,mutation=null){return env.DB.prepare('INSERT INTO activity(id,task_id,actor,event,detail,created_at) SELECT ?,id,?,?,?,? FROM tasks WHERE id=? AND (? IS NULL OR mutation_id=?)').bind(uid(),actor,event,detail,now,t.id,mutation,mutation);}
@@ -13,7 +13,7 @@ export async function createTask(env,b,user,now,jobStatements){
  const cadence=validateCadence(b.recurrence??'none');const titles=b.checklist??[];if(!Array.isArray(titles)||titles.length>30)fail('Use up to 30 checklist items.');const items=titles.map(checkTitle);
  const t={...validateTask(b),...validateExtra(b),id:uid(),version:1,created_by:user.name,mutation_id:uid(),series_id:cadence==='none'?null:uid()};
  if(t.series_id&&t.status==='done')fail('Start a recurring task as an open task.');
- const statements=[taskInsert(env,t,now,'(SELECT COUNT(*) FROM tasks)<2000'),eventStmt(env,t,user.name,'created','Created the task.',now,t.mutation_id),...itemsInsert(env,t,items),...jobStatements(env,t,'assigned',now)];
+ const statements=[taskInsert(env,t,now,'(SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL)<2000'),eventStmt(env,t,user.name,'created','Created the task.',now,t.mutation_id),...itemsInsert(env,t,items),...jobStatements(env,t,'assigned',now)];
  if(t.series_id)statements.push(env.DB.prepare('INSERT INTO recurring_series(id,cadence,anchor_day,template,current_task_id,next_due_date) SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM tasks WHERE id=?)').bind(t.series_id,cadence,Number(t.due_date.slice(8)),template(t,items),t.id,nextDate(t.due_date,cadence),t.id),env.DB.prepare('UPDATE tasks SET occurrence_date=? WHERE id=?').bind(t.due_date,t.id));
  const out=await env.DB.batch(statements);if(!out[0].meta.changes)fail('The workspace has reached its 2,000-task limit.',409);return t;
 }
@@ -38,17 +38,28 @@ export async function patchTask(env,id,b,user,now,jobStatements){
  }
  const out=await env.DB.batch(statements);if(!out[0].meta.changes)fail('Someone changed this task. Refresh and try again.',409);return t;
 }
+export async function deleteTask(env,id,b,user,now){
+ if(!Number.isInteger(b.version))fail('Refresh the task before deleting it.',409);
+ const mutation=uid();
+ const out=await env.DB.batch([
+ env.DB.prepare(`UPDATE tasks SET deleted_at=?,updated_at=?,version=version+1,mutation_id=? WHERE id=? AND version=? AND ${ACCESS}`).bind(now,now,mutation,id,b.version,user.name,user.name,user.name),
+ eventStmt(env,{id},user.name,'deleted','Deleted the task and stopped its reminders.',now,mutation),
+ env.DB.prepare("UPDATE jobs SET state='cancelled' WHERE task_id=? AND state='pending' AND EXISTS(SELECT 1 FROM tasks WHERE id=? AND mutation_id=?)").bind(id,id,mutation),
+ env.DB.prepare('UPDATE recurring_series SET active=0,revision=revision+1 WHERE current_task_id=? AND EXISTS(SELECT 1 FROM tasks WHERE id=? AND mutation_id=?)').bind(id,id,mutation)
+ ]);
+ if(!out[0].meta.changes)fail('Someone changed this task. Refresh and try again.',409);
+}
 export async function processRecurrences(env,jobStatements,now=Date.now()){
  const today=centralDate(now);
- const {results:series}=await env.DB.prepare("SELECT s.* FROM recurring_series s JOIN tasks t ON t.id=s.current_task_id WHERE s.active=1 AND (t.status='done' OR t.due_date<?) ORDER BY s.next_due_date LIMIT 1").bind(today).all();
+ const {results:series}=await env.DB.prepare("SELECT s.* FROM recurring_series s JOIN tasks t ON t.id=s.current_task_id WHERE s.active=1 AND t.deleted_at IS NULL AND (t.status='done' OR t.due_date<?) ORDER BY s.next_due_date LIMIT 1").bind(today).all();
  for(const s of series){
  const tpl=JSON.parse(s.template),mutation=uid(),t={...tpl,id:uid(),series_id:s.id,occurrence_date:s.next_due_date,due_date:s.next_due_date,version:1,status:'open',progress:'not_started',mutation_id:mutation};
- const condition="(SELECT COUNT(*) FROM tasks)<2000 AND EXISTS(SELECT 1 FROM recurring_series s JOIN tasks t ON t.id=s.current_task_id WHERE s.id=? AND s.revision=? AND s.active=1 AND (t.status='done' OR t.due_date<?))";
+ const condition="(SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL)<2000 AND EXISTS(SELECT 1 FROM recurring_series s JOIN tasks t ON t.id=s.current_task_id WHERE s.id=? AND s.revision=? AND s.active=1 AND t.deleted_at IS NULL AND (t.status='done' OR t.due_date<?))";
  await env.DB.batch([taskInsert(env,t,now,condition,[s.id,s.revision,today]),...itemsInsert(env,t,tpl.checklist||[]),eventStmt(env,t,'System','recurring',`Created the next ${s.cadence} occurrence.`,now,mutation),...jobStatements(env,t,'assigned',now),env.DB.prepare('UPDATE recurring_series SET current_task_id=?,next_due_date=?,revision=revision+1 WHERE id=? AND revision=? AND EXISTS(SELECT 1 FROM tasks WHERE id=? AND mutation_id=?)').bind(t.id,nextDate(t.due_date,s.cadence,s.anchor_day),s.id,s.revision,t.id,mutation)]);
  }
 }
 export async function summaryFor(env,user,now=Date.now()){
- const today=centralDate(now);const {results:tasks}=await env.DB.prepare("SELECT id,company,assignee,due_date,description,priority,progress FROM tasks WHERE status='open' AND due_date<=? AND (?='TJ' OR assignee=?) ORDER BY due_date,CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,created_at LIMIT 2000").bind(today,user.name,user.name).all();
+ const today=centralDate(now);const {results:tasks}=await env.DB.prepare("SELECT id,company,assignee,due_date,description,priority,progress FROM tasks WHERE deleted_at IS NULL AND status='open' AND due_date<=? AND (?='TJ' OR assignee=?) ORDER BY due_date,CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,created_at LIMIT 2000").bind(today,user.name,user.name).all();
  return {today,due_today:tasks.filter(t=>t.due_date===today),overdue:tasks.filter(t=>t.due_date<today),scope:user.name==='TJ'?'both companies':'your tasks'};
 }
 export async function processDigests(env,now=Date.now()){
@@ -84,7 +95,7 @@ export async function workflowRoute(req,env,ctx,user,helpers,now){
  const match=path.match(/^\/api\/tasks\/([\w-]+)(?:\/(comments|checklist|attachments)(?:\/([\w-]+))?)?$/);
  if(!match)return null;
  const [,id,resource,itemId]=match,t=await accessibleTask(env,id,user);
- if(!resource){if(req.method==='GET')return json(await details(env,t));if(req.method==='PATCH'){await patchTask(env,id,await body(req),user,now,jobStatements);background();return json({ok:true});}return null;}
+ if(!resource){if(req.method==='DELETE'){await deleteTask(env,id,await body(req),user,now);return json({ok:true});}if(req.method==='GET')return json(await details(env,t));if(req.method==='PATCH'){await patchTask(env,id,await body(req),user,now,jobStatements);background();return json({ok:true});}return null;}
  if(resource==='comments'&&req.method==='POST'){
  const b=await body(req);if(typeof b.body!=='string'||!b.body.trim()||b.body.trim().length>2000)fail('Write a comment of 1–2,000 characters.');
  const cid=uid();const out=await env.DB.batch([env.DB.prepare(`INSERT INTO comments(id,task_id,author,body,created_at) SELECT ?,id,?,?,? FROM tasks WHERE id=? AND ${ACCESS} AND (SELECT COUNT(*) FROM comments WHERE task_id=?)<200`).bind(cid,user.name,b.body.trim(),now,id,user.name,user.name,user.name,id),env.DB.prepare('INSERT INTO activity(id,task_id,actor,event,detail,created_at) SELECT ?,task_id,author,?,?,? FROM comments WHERE id=?').bind(uid(),'comment','Added a comment.',now,cid)]);if(!out[0].meta.changes)fail('This task has reached its 200-comment limit or your access changed.',409);return json({id:cid},201);
@@ -109,7 +120,7 @@ export async function workflowRoute(req,env,ctx,user,helpers,now){
  const out=await env.DB.batch(statements);if(!out[0].meta.changes)fail('File limit reached: 20 per task or 250 MB for the workspace.',409);return json({id:aid},201);
  }
  if(resource==='attachments'&&itemId&&req.method==='GET'){
- const attachment=await env.DB.prepare(`SELECT a.* FROM attachments a JOIN tasks t ON t.id=a.task_id WHERE a.id=? AND a.task_id=? AND (?='TJ' OR t.assignee=? OR t.created_by=?)`).bind(itemId,id,user.name,user.name,user.name).first();if(!attachment)fail('File not found.',404);
+ const attachment=await env.DB.prepare(`SELECT a.* FROM attachments a JOIN tasks t ON t.id=a.task_id WHERE a.id=? AND a.task_id=? AND t.deleted_at IS NULL AND (?='TJ' OR t.assignee=? OR t.created_by=?)`).bind(itemId,id,user.name,user.name,user.name).first();if(!attachment)fail('File not found.',404);
  const {results}=await env.DB.prepare('SELECT data FROM attachment_chunks WHERE attachment_id=? ORDER BY part').bind(itemId).all();const out=new Uint8Array(attachment.size);let offset=0;for(const row of results){const chunk=new Uint8Array(row.data);out.set(chunk,offset);offset+=chunk.length;}if(offset!==attachment.size)fail('Unable to read the complete file.',500);
  return new Response(out,{headers:{'Content-Type':'application/octet-stream','Content-Disposition':`attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(attachment.name)}`,'Content-Length':String(out.length),'Cache-Control':'no-store','Content-Security-Policy':"sandbox; default-src 'none'"}});
  }
