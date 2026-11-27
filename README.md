@@ -29,6 +29,10 @@ Phone subscriptions can only be registered or tested for the signed-in person. S
 
 ## Source and verification
 
+Version 1.2 adds the supplied company logos, a dark glass interface, gold and cyan company accents, and responsive layouts. Hover, dialog, and background motion respects the device’s reduced-motion preference. Panels retain readable backgrounds when backdrop blur is unavailable.
+
+Headings use [Sora](https://fonts.google.com/specimen/Sora); controls and task text use [Manrope](https://fonts.google.com/specimen/Manrope). Both fonts are self-hosted as Latin WOFF2 files under the SIL Open Font License. Their licenses are included in `public/sora-license.txt` and `public/manrope-license.txt`. Company logo images are optimized web copies of the supplied artwork.
+
 Requires Node.js 22.13+ (native `node:sqlite` for tests). No runtime npm dependencies.
 
 ```sh
