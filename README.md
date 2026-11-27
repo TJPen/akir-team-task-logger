@@ -8,22 +8,24 @@ Live app: https://akir-team-task-logger.designs-dd9.workers.dev
 
 - Company → assignee (Ms. Tay, TJ, Felicia) → due date → task description.
 - Edit, complete, reopen, search, and filter tasks. Saved in Cloudflare D1 and shared across devices.
-- Shared team password, secure HttpOnly sessions, same-origin mutation checks, and login rate limiting.
-- Installable web app with encrypted Web Push notifications. Each phone chooses its recipient and explicitly allows notifications.
+- Individual passwords, server-enforced account permissions, secure HttpOnly sessions, same-origin mutation checks, and login rate limiting.
+- Installable web app with encrypted Web Push notifications. Each phone uses the signed-in account and explicitly allows notifications.
 - Assignment/update notifications plus reminders at **9 AM America/Chicago** on the day before and the due date. Daylight saving time is handled automatically. The queue runs every five minutes; scheduled messages can arrive a few minutes after 9.
 - Finishing a task cancels unsent reminders. Edits replace the prior pending reminders. Reopening queues a fresh update.
 - No SMS service or phone numbers are required.
 
 ## Phone setup
 
-1. Open the app and enter the team password shared separately by TJ.
+1. Open the app and enter your own password. The password identifies your account automatically.
 2. On iPhone/iPad (iOS/iPadOS 16.4+), use Safari → Share → Add to Home Screen, then open that icon. On Android, use Chrome; installing to the Home Screen is optional.
-3. Open **Phone setup**, choose your name, tap **Enable notifications**, and allow the permission prompt.
+3. Open **Phone setup**, confirm your signed-in name, tap **Enable notifications**, and allow the permission prompt.
 4. Tap **Send a test**. Confirm that the notification appears on the phone.
 
 Repeat for each person/device. Browser permission, network connection, device notification settings, and the push service affect delivery. “Push service accepted” is not proof that the person saw the notification. A phone delivery test is required after setup.
 
-Everyone with the shared password can see/edit both companies’ tasks and select any notification recipient. Names are not separate authenticated accounts. Sign-out ends the board session but keeps that phone's reminders enabled; use **Disconnect this phone** to stop them.
+TJ is the administrator and can see/edit all tasks in both companies. Ms. Tay and Felicia can see/edit only tasks currently assigned to themselves. Every person can create tasks assigned to anyone, including themselves. A task assigned to someone else appears in that recipient’s list and TJ’s admin view; its creator receives a confirmation but cannot read or edit it afterward unless it is assigned back to them. These rules are enforced in the API, including direct requests and searches.
+
+Phone subscriptions can only be registered or tested for the signed-in person. Sign-out ends the session and disconnects that browser’s phone notifications. Sign in and enable notifications again to reconnect.
 
 ## Source and verification
 
@@ -52,9 +54,12 @@ Required bindings:
 | `APP_ORIGIN` | Plain text | Canonical HTTPS app origin |
 | `VAPID_PUBLIC` | Plain text | Base64url uncompressed P-256 public key |
 | `VAPID_PRIVATE` | Secret | JSON Web Key for its private key |
-| `TEAM_PASSWORD` | Secret | Cryptographically generated shared password |
+| `TJ_PASSWORD` | Secret | TJ administrator password |
+| `MSTAY_PASSWORD` | Secret | Ms. Tay password |
+| `FELICIA_PASSWORD` | Secret | Felicia password |
+| `LOGIN_PEPPER` | Secret | Random secret for login rate-limit keys |
 
-Credentials are **not** stored in this repository. Preserve secrets on redeploy. Rotating VAPID keys requires re-enabling notifications on every device. To rotate the team password, change the Cloudflare secret and delete existing `sessions` rows to revoke prior sessions. Do not commit passwords, push subscription endpoints, exports of live task data, or Cloudflare credentials.
+Credentials are **not** stored in this repository. Preserve secrets on redeploy. Rotating VAPID keys requires re-enabling notifications on every device. To rotate an individual password, change that person’s Cloudflare secret and delete their `sessions` rows to revoke prior sessions. Do not commit passwords, push subscription endpoints, exports of live task data, or Cloudflare credentials.
 
 ## First-build limits and behavior
 
@@ -68,3 +73,7 @@ Credentials are **not** stored in this repository. Preserve secrets on redeploy.
 - GitHub stores source only. Automatic deployment from GitHub is not configured; update Cloudflare explicitly after source changes.
 
 Platform reference: [Apple Web Push requirements](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/).
+
+## Upgrade from shared-password version
+
+Apply `migrations/002_personal_accounts.sql` once to an existing version 1.0 database before uploading version 1.1. For a new database use `schema.sql` directly and do not apply this migration again. Configure the four new authentication secrets, deploy, and remove the unused `TEAM_PASSWORD` secret. The migration preserves tasks and jobs, revokes all old shared sessions, and marks legacy phone subscriptions unverified. Everyone must sign in with their own password and save Phone setup again. Password values are configured only in Cloudflare, never in source.

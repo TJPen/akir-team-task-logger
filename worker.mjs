@@ -28,7 +28,7 @@ async function body(req){
  try{const value=JSON.parse(new TextDecoder().decode(all));if(!value||typeof value!=='object'||Array.isArray(value))fail('JSON object required.');return value;}catch{fail('Invalid JSON object.');}
 }
 function cookie(req){return req.headers.get('cookie')?.match(/(?:^|;\s*)team_session=([A-Za-z0-9_-]+)/)?.[1];}
-async function session(req,env){const token=cookie(req);if(!token)return false;return !!(await env.DB.prepare('SELECT id FROM sessions WHERE id=? AND expires_at>?').bind(await hash(token),Date.now()).first());}
+async function session(req,env){const token=cookie(req);if(!token)return false;const row=await env.DB.prepare('SELECT person FROM sessions WHERE id=? AND expires_at>?').bind(await hash(token),Date.now()).first();return row&&PEOPLE.includes(row.person)?{name:row.person,role:row.person==='TJ'?'admin':'member'}:null;}
 function jobStatements(env,t,kind,now,expectedVersion=t.version){
  const before=new Date(Date.parse(t.due_date+'T12:00:00Z')-DAY).toISOString().slice(0,10);
  const specs=[[kind,now,now+DAY],['before',morning(before),morning(before)+DAY],['due',morning(t.due_date),morning(t.due_date)+DAY]];
@@ -43,7 +43,7 @@ export async function processJobs(env,now=Date.now()){
  const claim=await env.DB.prepare("UPDATE jobs SET lease_until=?,attempts=attempts+1 WHERE id=? AND state='pending' AND lease_until<?").bind(now+120000,job.id,now).run();if(!claim.meta.changes)continue;
  const t=await env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(job.task_id).first();
  if(!t||t.status!=='open'||t.version!==job.version){await env.DB.prepare("UPDATE jobs SET state='cancelled' WHERE id=?").bind(job.id).run();continue;}
- const {results:subs}=await env.DB.prepare('SELECT * FROM subscriptions WHERE person=? LIMIT 10').bind(t.assignee).all();
+ const {results:subs}=await env.DB.prepare('SELECT * FROM subscriptions WHERE person=? AND verified=1 LIMIT 10').bind(t.assignee).all();
  let pending=subs.length===0, error=pending?'Waiting for an enabled phone':null;
  for(const sub of subs){
  if(await env.DB.prepare('SELECT job_id FROM deliveries WHERE job_id=? AND subscription_id=?').bind(job.id,sub.id).first())continue;
@@ -61,23 +61,26 @@ export async function processJobs(env,now=Date.now()){
 }
 async function route(req,env,ctx){
  const url=new URL(req.url),path=url.pathname,now=Date.now();
- if(req.method==='GET'&&ASSETS[path]){const a=ASSETS[path];return new Response(a.base64?unb64(a.body):a.body,{headers:{'Content-Type':a.type,'Cache-Control':path==='/sw.js'?'no-cache':'public, max-age=300'}});}
+ if(req.method==='GET'&&ASSETS[path]){const a=ASSETS[path];return new Response(a.base64?unb64(a.body):a.body,{headers:{'Content-Type':a.type,'Cache-Control':path==='/sw.js'||path==='/'?'no-cache':'public, max-age=300'}});}
  if(!path.startsWith('/api/'))return json({error:'Not found'},404);
  if(req.method!=='GET'&&req.headers.get('origin')!==url.origin)fail('Request origin not allowed.',403);
  if(path==='/api/login'&&req.method==='POST'){
- const b=await body(req);if(typeof b.password!=='string'||b.password.length>256)fail('Enter the team password.');
- const bucket=Math.floor(now/900000),ip=req.headers.get('cf-connecting-ip')||'unknown';const id=await hmac(`${ip}:${bucket}`,env.TEAM_PASSWORD);
+ const b=await body(req);if(typeof b.password!=='string'||b.password.length>256)fail('Enter your password.');
+ const bucket=Math.floor(now/900000),ip=req.headers.get('cf-connecting-ip')||'unknown';const id=await hmac(`${ip}:${bucket}`,env.LOGIN_PEPPER);
  const lim=await env.DB.prepare('INSERT INTO login_limits(id,count,expires_at) VALUES(?,1,?) ON CONFLICT(id) DO UPDATE SET count=count+1 RETURNING count').bind(id,(bucket+1)*900000).first();
  if(lim.count>10)return json({error:'Too many attempts. Please try again in 15 minutes.'},429,{'Retry-After':'900'});
- if(!await passwordMatches(b.password,env.TEAM_PASSWORD))fail('That password does not match. Try again.',401);
- const token=b64(crypto.getRandomValues(new Uint8Array(32)));await env.DB.prepare('INSERT INTO sessions(id,expires_at) VALUES(?,?)').bind(await hash(token),now+30*DAY).run();
+ const accounts=[['TJ',env.TJ_PASSWORD],['Ms. Tay',env.MSTAY_PASSWORD],['Felicia',env.FELICIA_PASSWORD]];
+ const matches=await Promise.all(accounts.map(([,password])=>passwordMatches(b.password,password)));
+ const account=accounts.find((_,i)=>matches[i]);if(!account)fail('That password does not match. Try again.',401);
+ const person=account[0];
+ const token=b64(crypto.getRandomValues(new Uint8Array(32)));await env.DB.prepare('INSERT INTO sessions(id,expires_at,person) VALUES(?,?,?)').bind(await hash(token),now+30*DAY,person).run();
  return json({ok:true},200,{'Set-Cookie':`team_session=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000`});
  }
- if(!await session(req,env))fail('Sign in with the team password.',401);
- if(path==='/api/logout'&&req.method==='POST'){await env.DB.prepare('DELETE FROM sessions WHERE id=?').bind(await hash(cookie(req))).run();return json({ok:true},200,{'Set-Cookie':'team_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0'});}
+ const user=await session(req,env);if(!user)fail('Sign in with your password.',401);
+ if(path==='/api/logout'&&req.method==='POST'){const b=await body(req);await env.DB.batch([env.DB.prepare('DELETE FROM sessions WHERE id=?').bind(await hash(cookie(req))),env.DB.prepare('DELETE FROM subscriptions WHERE id=? AND person=?').bind(await hash(typeof b.endpoint==='string'?b.endpoint:''),user.name)]);return json({ok:true},200,{'Set-Cookie':'team_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0'});}
  if(path==='/api/state'&&req.method==='GET'){
- const [tasks,devices]=await env.DB.batch([env.DB.prepare(`SELECT t.*,(SELECT state FROM jobs WHERE task_id=t.id AND version=t.version ORDER BY CASE kind WHEN 'assigned' THEN 0 WHEN 'updated' THEN 0 ELSE 1 END,run_at DESC LIMIT 1) AS notification_state FROM tasks t ORDER BY status, due_date,created_at DESC LIMIT 2000`),env.DB.prepare('SELECT person,COUNT(*) AS count FROM subscriptions GROUP BY person')]);
- return json({tasks:tasks.results,devices:devices.results,today:centralDate(now),vapid:env.VAPID_PUBLIC});
+ const [tasks,devices]=await env.DB.batch([env.DB.prepare(`SELECT t.*,(SELECT state FROM jobs WHERE task_id=t.id AND version=t.version ORDER BY CASE kind WHEN 'assigned' THEN 0 WHEN 'updated' THEN 0 ELSE 1 END,run_at DESC LIMIT 1) AS notification_state FROM tasks t WHERE (?='TJ' OR t.assignee=?) ORDER BY status, due_date,created_at DESC LIMIT 2000`).bind(user.name,user.name),env.DB.prepare('SELECT person,COUNT(*) AS count FROM subscriptions WHERE verified=1 GROUP BY person')]);
+ return json({user,tasks:tasks.results,devices:devices.results,today:centralDate(now),vapid:env.VAPID_PUBLIC});
  }
  if(path==='/api/tasks'&&req.method==='POST'){
  const t={...validateTask(await body(req)),id:crypto.randomUUID(),version:1};
@@ -87,7 +90,7 @@ async function route(req,env,ctx){
  }
  if(/^\/api\/tasks\/[\w-]+$/.test(path)&&req.method==='PATCH'){
  const id=path.split('/').pop(),b=await body(req);if(!Number.isInteger(b.version))fail('Reload the task before editing.',409);
- const old=await env.DB.prepare('SELECT * FROM tasks WHERE id=?').bind(id).first();if(!old)fail('Task not found.',404);if(old.version!==b.version)fail('Someone changed this task. Refresh and try again.',409);
+ const old=await env.DB.prepare("SELECT * FROM tasks WHERE id=? AND (?='TJ' OR assignee=?)").bind(id,user.name,user.name).first();if(!old)fail('Task not found.',404);if(old.version!==b.version)fail('Someone changed this task. Refresh and try again.',409);
  const t={...validateTask({...old,...b}),id,version:old.version+1,status:b.status??old.status};if(!['open','done'].includes(t.status))fail('Invalid task status.');
  const results=await env.DB.batch([
  env.DB.prepare('UPDATE tasks SET company=?,assignee=?,due_date=?,description=?,status=?,version=version+1,updated_at=? WHERE id=? AND version=?').bind(t.company,t.assignee,t.due_date,t.description,t.status,now,id,old.version),
@@ -97,17 +100,19 @@ async function route(req,env,ctx){
  ctx.waitUntil(processJobs(env).catch(()=>console.error(JSON.stringify({event:'push_processing_failed'}))));return json({ok:true});
  }
  if(path==='/api/subscriptions'&&req.method==='POST'){
- const b=await body(req),s=b.subscription;if(!PEOPLE.includes(b.person)||!s||typeof s.endpoint!=='string'||s.endpoint.length>2048||!validEndpoint(s.endpoint))fail('This phone’s push service is not supported.');
+ const b=await body(req),s=b.subscription;if(b.person&&b.person!==user.name)fail('You can only enable notifications for yourself.',403);b.person=user.name;if(!s||typeof s.endpoint!=='string'||s.endpoint.length>2048||!validEndpoint(s.endpoint))fail('This phone’s push service is not supported.');
  try{if(unb64(s.keys.p256dh).length!==65||unb64(s.keys.auth).length!==16)throw Error();await crypto.subtle.importKey('raw',unb64(s.keys.p256dh),{name:'ECDH',namedCurve:'P-256'},false,[]);}catch{fail('Invalid phone subscription. Please enable notifications again.');}
- const id=await hash(s.endpoint),existing=await env.DB.prepare('SELECT id FROM subscriptions WHERE id=?').bind(id).first();
+ const id=await hash(s.endpoint),existing=await env.DB.prepare('SELECT id,person,verified FROM subscriptions WHERE id=?').bind(id).first();
+ if(existing&&existing.verified&&existing.person!==user.name)fail('This browser is connected to another person. Disconnect it before enabling your notifications.',409);
  if(!existing&&(await env.DB.prepare('SELECT COUNT(*) AS n FROM subscriptions WHERE person=?').bind(b.person).first()).n>=10)fail('This person already has 10 enabled devices.');
- await env.DB.prepare('INSERT INTO subscriptions(id,person,endpoint,p256dh,auth,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET person=excluded.person,p256dh=excluded.p256dh,auth=excluded.auth').bind(id,b.person,s.endpoint,s.keys.p256dh,s.keys.auth,now).run();
+ const savedSubscription=await env.DB.prepare('INSERT INTO subscriptions(id,person,endpoint,p256dh,auth,created_at,verified) VALUES(?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET person=excluded.person,p256dh=excluded.p256dh,auth=excluded.auth,verified=1 WHERE subscriptions.person=excluded.person OR subscriptions.verified=0').bind(id,b.person,s.endpoint,s.keys.p256dh,s.keys.auth,now).run();
+ if(!savedSubscription.meta.changes)fail('This browser is connected to another person.',409);
  await env.DB.prepare("UPDATE jobs SET lease_until=0 WHERE state='pending' AND last_error='Waiting for an enabled phone' AND task_id IN(SELECT id FROM tasks WHERE assignee=?)").bind(b.person).run();
  ctx.waitUntil(processJobs(env).catch(()=>console.error(JSON.stringify({event:'push_processing_failed'}))));return json({ok:true});
  }
- if(path==='/api/subscriptions/remove'&&req.method==='POST'){const b=await body(req);if(typeof b.endpoint!=='string')fail('Invalid subscription.');await env.DB.prepare('DELETE FROM subscriptions WHERE id=?').bind(await hash(b.endpoint)).run();return json({ok:true});}
+ if(path==='/api/subscriptions/remove'&&req.method==='POST'){const b=await body(req);if(typeof b.endpoint!=='string')fail('Invalid subscription.');await env.DB.prepare('DELETE FROM subscriptions WHERE id=? AND person=?').bind(await hash(b.endpoint),user.name).run();return json({ok:true});}
  if(path==='/api/push-test'&&req.method==='POST'){
- const b=await body(req);if(typeof b.endpoint!=='string')fail('Enable notifications first.');const s=await env.DB.prepare('SELECT * FROM subscriptions WHERE id=?').bind(await hash(b.endpoint)).first();if(!s)fail('Enable notifications first.');
+ const b=await body(req);if(typeof b.endpoint!=='string')fail('Enable notifications first.');const s=await env.DB.prepare('SELECT * FROM subscriptions WHERE id=? AND person=? AND verified=1').bind(await hash(b.endpoint),user.name).first();if(!s)fail('Enable notifications first.');
  const res=await sendPush(s,{title:'You’re connected',body:`${s.person}, this phone is ready for team task reminders.`,tag:'setup-test',url:'/'},env);
  if(!res.ok)fail('The push service did not accept this test. Try enabling notifications again.',502);return json({ok:true});
  }
